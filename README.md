@@ -1,6 +1,6 @@
 ### Credit
 
-Based on wooden_axe by (提米吖)[https://www.minebbs.com/threads/wooden_axe.7561/page-2]
+Based on wooden_axe by [提米吖](https://www.minebbs.com/threads/wooden_axe.7561/page-2)
 
 ### Install
 
