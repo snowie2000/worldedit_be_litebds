@@ -1,7 +1,8 @@
 /**
- * @name Wooden_axe
- * @description 这个JS是Wooden_axe插件的重构版本,第一个版本写的太寄了,没法看
+ * @name WorldEdit_BE
+ * @description 基于Wooden_axe的WE简化版
  * @author Timiya
+ * @modified snowie2000
  * @note 编写时间2023/04/13
  */
 //LiteLoaderScript Dev Helper
@@ -747,7 +748,7 @@ function onServerStarted() {
             if (CanUseWoodenAxe(pl)) {
                 let pos = pl.pos;
                 pos.y -= 1;
-                SetPos2(pl, FloatPosToPOS(pos), (s) => { out.success(GetSendText(0, s)); });
+                SetPos1(pl, FloatPosToPOS(pos), (s) => { out.success(GetSendText(0, s)); });
             }
             else {
                 out.error(GetSendText(3, "你没有权限使用此命令!"));
@@ -820,17 +821,23 @@ function onServerStarted() {
         cmd.setEnum("WA_MirrorOptEnum", ["none", "x", "z", "xz"]);
         cmd.setEnum("WA_RotationOptEnum", ["0", "90", "180", "270"]);
         cmd.optional("WA_MirrorOpt", ParamType.Enum, "WA_MirrorOptEnum", "WA_MirrorOpt", 1);
-        cmd.optional("WA_RotationOpt", ParamType.Enum, "WA_RotationOptEnum", "WA_RotationOpt", 1);
+        cmd.mandatory("WA_RotationOpt", ParamType.Int);
         cmd.overload([]);
         cmd.overload(["WA_RotationOpt", "WA_MirrorOpt"]);
         cmd.setCallback((_cmd, ori, out, res) => {
             let pl = ori.player;
+            let rot = 0
             if (pl == null) {
                 return out.error(GetSendText(3, "无法通过非玩家执行此命令!"));
             }
+            if (res["WA_RotationOpt"]) {
+                rot = res["WA_RotationOpt"]
+                if (rot>270 || rot%90!==0 || rot<0) {
+                    return out.error(GetSendText(3, "旋转角度必须为90的倍数且小于360!"))
+                }
+            }
             if (CanUseWoodenAxe(pl)) {
-                let [r, m] = [
-                    !res["WA_RotationOpt"] ? 0 : +res["WA_RotationOpt"],
+                let [r, m] = [rot/90,
                     !res["WA_MirrorOpt"] ? 0 :
                         res["WA_MirrorOpt"] == "none" ? 0 :
                             res["WA_MirrorOpt"] == "x" ? 1 :
@@ -1016,10 +1023,10 @@ function onServerStarted() {
     }).reg();
 }
 function main() {
-    ll.registerPlugin("Wooden_axe.js", "简易版创世神", [1, 2, 8], {
+    ll.registerPlugin("Wooden_axe.js", "简易版创世神", [1, 3, 0], {
         "Author": "Timiya"
     });
-    logger.setTitle("Wooden_axe");
+    logger.setTitle("WorldEdit_BE");
     UseLLSEApi = conf.get("UseLLSEApi");
     PSConf = conf.get("PermSystem");
     SelectItem = conf.get("SelectItem");
@@ -1033,6 +1040,6 @@ function main() {
     mc.listen("onUseItemOn", (p, i, b) => { return onUseItemOn(p, i, b, deb); });
     mc.listen("onConsoleOutput", onConsoleOutput);
     mc.listen("onServerStarted", onServerStarted);
-    logger.info("简易版创世神(Wooden_axe)部署成功!版本: 1.2.8(重构第一版)");
+    logger.info("简易版创世神(WorldEdit_BE)部署成功!版本: 1.3.0");
 }
 main();

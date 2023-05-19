@@ -8,10 +8,16 @@ Put the js file into plugin folder.
 
 ### What's new
 
-Selection outline highlight
+Selection outline visualization
 
-expandable selection (just like java FAWE)
+expandable selection (just like java edition of FAWE)
 
 multiple undo instances (10 by default)
 
 undoable copy/paste
+
+fixed paste rotation
+
+### Known issues
+
+undo doesn't work correctly for rotated pastes
