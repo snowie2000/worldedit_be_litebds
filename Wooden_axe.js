@@ -563,15 +563,15 @@ class PosSelector {
         }
     }
     showGrid(pl) {
-        if (this.pos1 && this.pos2) {
-            let visualizer = ParticleGenerator.get(pl.xuid)
+		let visualizer = ParticleGenerator.get(pl.xuid)
+		visualizer && visualizer.clear()
+        if (this.pos1 && this.pos2) {            
             if (!visualizer) {
-                visualizer = new ParticlePainter(/*"minecraft:sparkler_emitter", 1500*/)
+                visualizer = new ParticlePainter("minecraft:balloon_gas_particle", 1000)
                 ParticleGenerator.set(pl.xuid, visualizer)
             }
             const small = GetMcMinPhase(this.pos1, this.pos2)
             const big = GetMcMaxPhase(this.pos1, this.pos2)
-            visualizer.clear()
             visualizer.drawCube(ToFloatPos(small, pl.dimid), ToFloatPos([big[0]+1, big[1]+1, big[2]+1], pl.dimid))
         }
     }
@@ -669,6 +669,9 @@ function ST(pl, level, msg) {
 function SetPos1(pl, pos, out) {
     let PosSel = PosSelector.Get(pl.xuid);
     PosSel.pos1 = pos;
+	if (SelectionMode.has(pl.xuid) && SelectionMode.get(pl.xuid) == "expand")  {
+		PosSel.pos2 = undefined;	// 扩展模式下，选中pos1将重置整个选区
+	}
     PosSel.showGrid(pl)
     out(`pos1选择成功(${pos[0]},${pos[1]},${pos[2]},${pl.pos.dim})`);
 }
@@ -699,9 +702,15 @@ function onLeft(pl) {
     SelectionMode.delete(xuid)
     return true;
 }
-function onDestroyBlock(pl, bl) {
+function onAttackBlock(pl, bl) {
     if (CanUseWoodenAxe(pl) && pl.getHand().type == SelectItem) {
         SetPos1(pl, FloatPosToPOS(bl.pos), (s) => { ST(pl, 1, s); });
+        return false;
+    }
+    return true;
+}
+function onDestroyBlock(pl, bl) {
+    if (CanUseWoodenAxe(pl) && pl.getHand().type == SelectItem) {
         return false;
     }
     return true;
@@ -1035,7 +1044,8 @@ function main() {
     }
     mc.listen("onChangeDim", onChangeDim);
     mc.listen("onLeft", onLeft);
-    mc.listen("onDestroyBlock", onDestroyBlock);
+    mc.listen("onAttackBlock", onAttackBlock);
+	mc.listen("onDestroyBlock", onDestroyBlock);
     let deb = Debounce(SetPos2, 500);
     mc.listen("onUseItemOn", (p, i, b) => { return onUseItemOn(p, i, b, deb); });
     mc.listen("onConsoleOutput", onConsoleOutput);
