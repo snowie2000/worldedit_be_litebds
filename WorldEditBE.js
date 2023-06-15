@@ -7,7 +7,8 @@
  */
 //LiteLoaderScript Dev Helper
 // <reference path="c:\Users\Administrator\.vscode\extensions\moxicat.llscripthelper-2.1.5/dts/llaids/src/index.d.ts"/>
-let conf = new JsonConfigFile("./plugins/Timiya/config/Wooden_axe.json", JSON.stringify({
+let ConfigPath = "./plugins/WorldEditBE/";
+let conf = new JsonConfigFile(`${ConfigPath}config.json`, JSON.stringify({
     "SelectItem": "minecraft:wooden_axe",
     "UseLLSEApi": true,
     "MaxUndo": 10,
@@ -24,6 +25,360 @@ let ParticleGenerator = new Map();
 let SelectionMode = new Map();
 let OutputSwitch = true;
 let WorldOrigin = [0, 0, 0] // 世界原点，无偏移坐标
+
+// for compatiblity
+let console = {
+    log: logger.info,
+    error: logger.error
+}
+
+// 将IntPos/FloatPos转换成js对象
+function ParsePos(pos) {
+    // Timya格式，使用数组表示
+    if (Array.isArray(pos)) {
+        return {
+            x: pos[0],
+            y: pos[1],
+            z: pos[2],
+            dimid: pos[3] || 0
+        }
+    }
+    // LiteBDS标准格式
+    return {
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+        dimid: pos.dimid
+    }
+}
+function MakePos(x, y, z, dimid = 0) {
+    return new FloatPos(x, y, z, dimid)
+}
+function MakePosFromObject(pos) {
+    return new FloatPos(pos.x, pos.y, pos.z, pos.dimid)
+}
+function GetMinPos(...args) {
+    if (!args.length) {
+        return null
+    }
+    let min = {...args[0]}
+    for (let i=1; i<args.length; i++) {
+        min.x = Math.min(min.x, args[i].x)
+        min.y = Math.min(min.y, args[i].y)
+        min.z = Math.min(min.z, args[i].z)
+    }
+    return min
+}
+function GetMaxPos(...args) {
+    if (!args.length) {
+        return null
+    }
+    let max = {...args[0]}
+    for (let i=1; i<args.length; i++) {
+        max.x = Math.max(max.x, args[i].x)
+        max.y = Math.max(max.y, args[i].y)
+        max.z = Math.max(max.z, args[i].z)
+    }
+    return max
+}
+
+class PortalInfo {
+    fileName;
+    portalInfo;
+    jsonTemplate;
+    checker;
+    inActionPlayers;
+    constructor() {
+        this.fileName = `${ConfigPath}portal.json`;
+        this.jsonTemplate = {portals: {}, targets: {}}
+        this.parseFile();
+        this.checker = 0
+        this.inActionPlayers = new Set()
+    }
+    parseFile() {
+        if (File.exists(this.fileName)) {
+            this.portalInfo = JSON.parse(file.readFrom(this.fileName)) || this.jsonTemplate;
+        } else {
+            new JsonConfigFile(`${ConfigPath}portal.json`, JSON.stringify(this.jsonTemplate, null, 2));
+            this.portalInfo = {...this.jsonTemplate}
+        }
+    }
+    saveFile() {
+        file.writeTo(this.fileName, JSON.stringify(this.portalInfo, null, 2))
+    }
+    listPortal() {
+        const portals = Object.keys(this.portalInfo.portals)
+        const targets = new Set(Object.keys(this.portalInfo.targets))
+        return portals.map(p=>({
+            name: p,
+            linked: targets.has(p)
+        }))
+    }
+    // 根据portal的形状计算可以被传送的目标点
+    getPortalTpSpot(p1, p2) {
+        function getProperPosVertial(pos, height) {
+            for (let i=0; i<height; i++) {
+                const block = mc.getBlock(pos.x, pos.y+i, pos.z, pos.dimid)
+                if (block.isAir) {
+                    return {
+                        ...pos,
+                        y: pos.y + i
+                    }
+                }
+            }
+            return pos
+        }
+
+        function getProperPosHorizontal(pos1, pos2) {
+            const xCenter = (pos1.x+pos2.x)/2
+            const zCenter = (pos1.z+pos2.z)/2
+            let xStart = xCenter, xEnd = xCenter, zStart = zCenter, zEnd = zCenter
+            if (xCenter !== Math.floor(xCenter)) {  //xCenter 是一个整数
+                xStart = Math.floor(xCenter)
+                xEnd = xStart + 1
+            }
+            if (zCenter !== Math.floor(zCenter)) {  //zCenter 是一个整数
+                zStart = Math.floor(zCenter)
+                zEnd = zStart + 1
+            }
+            let deltaX=xStart-pos1.x, deltaZ=zStart-pos1.z, flag = true, res = null
+            while (flag && !res) {
+                const scanlineX1 = pos1.x + deltaX;
+                const scanlineX2 = pos2.x - deltaX;
+                const scanlineZ1 = pos1.z + deltaZ;
+                const scanlineZ2 = pos2.z - deltaZ;
+                let block, blockPortal
+                // find a block that is air and the block underneath it is solid.
+                for (let x=scanlineX1; x<=scanlineX2; x++) {
+                    blockPortal = mc.getBlock(x, pos2.y-1, scanlineZ1, pos1.dimid)
+                    block = mc.getBlock(x, pos2.y, scanlineZ1, pos1.dimid)
+                    if (block.isAir && !blockPortal.isAir) {
+                        res = {x, y: pos2.y, z: scanlineZ1, dimid: pos1.dimid}
+                        break
+                    }
+                    blockPortal = mc.getBlock(x, pos2.y-1, scanlineZ2, pos1.dimid)
+                    block = mc.getBlock(x, pos2.y, scanlineZ2, pos1.dimid)
+                    if (block.isAir && !blockPortal.isAir) {
+                        res = {x, y: pos2.y, z: scanlineZ1, dimid: pos1.dimid}
+                        break
+                    }
+                }
+                if (!res) {
+                    for (let z=scanlineZ1; z<=scanlineZ2; z++) {
+                        blockPortal = mc.getBlock(scanlineX1, pos2.y-1, z, pos1.dimid)
+                        block = mc.getBlock(scanlineX1, pos2.y, z, pos1.dimid)
+                        if (block.isAir && !blockPortal.isAir) {
+                            res = {x: scanlineX1, y: pos2.y, z, dimid: pos1.dimid}
+                            break
+                        }
+                        blockPortal = mc.getBlock(scanlineX2, pos2.y-1, z, pos1.dimid)
+                        block = mc.getBlock(scanlineX2, pos2.y, z, pos1.dimid)
+                        if (block.isAir && !blockPortal.isAir) {
+                            res = {x: scanlineX2, y: pos2.y, z, dimid: pos1.dimid}
+                            break
+                        }
+                    }
+                }
+
+                // exit loop if both x and z are on their egdes
+                flag = false
+                if (deltaX>=0) { deltaX--; flag=true}
+                if (deltaZ>=0) { deltaZ--; flag=true}
+            }
+            if (res) {
+                console.log("found a valid empty space to teleport")
+                return res
+            }
+            console.log("all blocks are occupied, teleport to the center")
+            return {
+                x: Math.floor(xCenter),
+                y: pos2.y,
+                z: Math.floor(zCenter),
+                dimid: pos1.dimid
+            }
+        }
+
+        const depth = p2.z - p1.z + 1
+        const width = p2.x - p1.x + 1
+        const height = p2.y - p1.y + 1
+        let flatPortal = height < width && height < depth   // 这是一个横着的portal
+        if (flatPortal) {
+            // 横向portal
+            const tpPoint = getProperPosHorizontal(p1, p2)
+            return {
+                tp1: tpPoint,
+                tp2: tpPoint
+            }
+        } else {
+            // 竖着的portal
+            if (depth > width) {
+                return {
+                    tp1: getProperPosVertial({
+                        x: p1.x-1, 
+                        y: p1.y, 
+                        z: Math.floor((p1.z + p2.z)/2),
+                        dimid: p1.dimid
+                    }, p2.y-p1.y),
+                    tp2:getProperPosVertial({
+                        x: p2.x+1, 
+                        y: p1.y, 
+                        z: Math.floor((p1.z + p2.z)/2),
+                        dimid: p1.dimid
+                    }, p2.y-p1.y)
+                }
+            } else {
+                return {
+                    tp1: getProperPosVertial({
+                        x: Math.floor((p1.x + p2.x) /2), 
+                        y: p1.y, 
+                        z: p1.z-1,
+                        dimid: p1.dimid
+                    }, p2.y-p1.y),
+                    tp2:getProperPosVertial({
+                        x: Math.floor((p1.x + p2.x) /2), 
+                        y: p1.y, 
+                        z: p2.z+1,
+                        dimid: p1.dimid
+                    }, p2.y-p1.y)
+                }
+            }
+        }
+    }
+    addPortal(name, pos1, pos2) {
+        if (this.portalInfo.portals[name]) 
+            return false
+        const newPortal = {
+            posMin: GetMinPos(ParsePos(pos1), ParsePos(pos2)),
+            posMax: GetMaxPos(ParsePos(pos1), ParsePos(pos2)),
+            name,
+        }
+        newPortal.posMax = {
+            x: newPortal.posMax.x+1,
+            y: newPortal.posMax.y+1,
+            z: newPortal.posMax.z+1,
+            dimid: newPortal.posMax.dimid
+        }
+        newPortal.tpTarget = this.getPortalTpSpot(newPortal.posMin, newPortal.posMax)
+        this.portalInfo.portals[name] = newPortal
+        this.saveFile()
+        return newPortal.tpTarget
+    }
+    deletePortal(name) {
+        if (this.portalInfo.portals[name]) {
+            delete(this.portalInfo.portals[name])
+            delete(this.portalInfo.targets[name])
+            this.saveFile()
+            return true
+        } else {
+            return false;
+        }
+    }
+    unlinkPortal(name) {
+        if (this.portalInfo.targets[name]) {
+            delete(this.portalInfo.targets[name])
+            this.saveFile()
+            return true
+        } else {
+            return false;
+        }
+    }
+    getPortal(name) {
+        return this.portalInfo.portals[name]
+    }
+    linkPortal(name, pos1, pos2) {
+        if (this.portalInfo.portals[name]) {
+            const newTarget = {
+                posMin: GetMinPos(ParsePos(pos1), ParsePos(pos2)),
+                posMax: GetMaxPos(ParsePos(pos1), ParsePos(pos2)),
+                name,
+            }
+            newTarget.posMax = {
+                x: newTarget.posMax.x+1,
+                y: newTarget.posMax.y+1,
+                z: newTarget.posMax.z+1,
+                dimid: newTarget.posMax.dimid
+            }
+            newTarget.tpTarget = this.getPortalTpSpot(newTarget.posMin, newTarget.posMax)
+            this.portalInfo.targets[name] = newTarget
+            this.saveFile()
+            logger.error(JSON.stringify(newTarget.tpTarget))
+            return newTarget.tpTarget   // 成功则返回传送目标点
+        }
+        return false
+    }
+    getTeleportTarget(pos, pl) {    // 给定一个坐标，返回传送至的坐标，如不在任何传送门内，则返回null
+        let res = null
+        let src = ParsePos(pos)
+        Object.values(this.portalInfo.portals).some(portal=>{
+            if (portal.posMin.dimid !== src.dimid) return false   // 不在同维度直接跳过
+            if (!this.portalInfo.targets[portal.name]) return false // 没有关联目标，跳过
+
+            if (portal.posMin.x <= src.x && portal.posMax.x >= src.x &&
+                portal.posMin.y <= src.y && portal.posMax.y > src.y &&
+                portal.posMin.z <= src.z && portal.posMax.z >= src.z) {
+                    console.log(pl.name," is in portal ",portal.name)
+                    res = this.portalInfo.targets[portal.name].tpTarget  
+                    return true
+                }
+        })
+        Object.values(this.portalInfo.targets).some(portalTarget=>{
+            if (portalTarget.posMin.dimid !== src.dimid) return false   // 不在同维度直接跳过
+            if (portalTarget.posMin.x <= src.x && portalTarget.posMax.x >= src.x &&
+                portalTarget.posMin.y <= src.y && portalTarget.posMax.y > src.y &&
+                portalTarget.posMin.z <= src.z && portalTarget.posMax.z >= src.z) {
+                    console.log(pl.name," is in portal target ",portalTarget.name)
+                    res = this.portalInfo.portals[portalTarget.name].tpTarget 
+                    return true
+                }
+        })
+        if (res) {
+            console.log("facing ", pl.direction.toFacing())
+            // 根据pl的方向决定传送至tp1还是tp2
+            switch (pl.direction.toFacing()) {
+                case 2:
+                case 1:
+                    return res.tp1
+                case 0:
+                case 3:    
+                    return res.tp2
+                default:
+                    return res.tp1
+            }
+        }
+        return null
+    }
+    doCheck() {
+        const players = mc.getOnlinePlayers()
+        players.forEach(pl=>{
+            if (this.inActionPlayers.has(pl.xuid)) return;
+            const target = this.getTeleportTarget(pl.feetPos, pl);
+            if (target) {
+                this.inActionPlayers.add(pl.xuid)
+                setTimeout(()=>this.inActionPlayers.delete(pl.xuid), 1000)
+                pl.teleport(target.x, target.y, target.z, target.dimid)
+            }
+        })
+        if (!players.length) {
+            this.stopCheck()
+        }
+    }
+    checkForTeleport() {
+        if (this.checker) return;
+        console.log("running portal check")
+        this.checker = setInterval(()=>this.doCheck(), 120)
+    }
+    stopCheck() {
+        if (this.checker) {
+            console.log("portal check stopped")
+            clearInterval(this.checker)
+            this.checker = 0
+        }
+    }
+}
+
+let Portal = new PortalInfo();
+
+
 function GetItemBlockStatesToJson(it) {
     let json = {};
     let nbt = it.getNbt().getTag("Block");
@@ -349,6 +704,12 @@ class ParticlePainter {
             y: Math.max(start.y, end.y), 
             z: Math.max(start.z, end.z)
         }
+        // check if the size is too large
+
+        if (e.x-s.z>1000 || e.y-s.y>1000 || e.z-s.z>1000) {
+            return
+        }
+
         // add 12 sides
         for (let x=s.x+spacing; x<e.x; x+=spacing) {
             this.dots.push(new FloatPos(x, s.y, s.z, start.dimid))
@@ -405,6 +766,15 @@ class ParticlePainter {
     clear() {
         this.stop()
         this.dots = []
+    }
+    static ShowIndicator(pos, particleName = "minecraft:crop_growth_emitter", duration = 3000, interval = 1000) {
+        let counter = duration / interval
+        let worker = setInterval(()=>{
+            mc.spawnParticle(pos, particleName)
+            if (--counter <= 0) {
+                clearInterval(worker)
+            }
+        }, interval)
     }
 }
 
@@ -568,11 +938,12 @@ class PosSelector {
         if (this.pos1 && this.pos2) {            
             if (!visualizer) {
                 visualizer = new ParticlePainter("minecraft:balloon_gas_particle", 1000)
+                // visualizer = new ParticlePainter("minecraft:basic_flame_particle", 1000)
                 ParticleGenerator.set(pl.xuid, visualizer)
             }
             const small = GetMcMinPhase(this.pos1, this.pos2)
             const big = GetMcMaxPhase(this.pos1, this.pos2)
-            visualizer.drawCube(ToFloatPos(small, pl.dimid), ToFloatPos([big[0]+1, big[1]+1, big[2]+1], pl.dimid))
+            visualizer.drawCube(ToFloatPos(small, this.pos1[3]), ToFloatPos([big[0]+1, big[1]+1, big[2]+1], this.pos1[3]))
         }
     }
 }
@@ -609,7 +980,7 @@ class WA_Command {
 function AutoCreatePermData(perm) {
     if (!Permission.permissionExists(perm)) {
         logger.warn("检测到权限组未创建!自动创建...");
-        Permission.registerPermission(perm, "能够使用Wooden_axe插件的所有功能");
+        Permission.registerPermission(perm, "WorldEditBE");
         Permission.saveData();
     }
 }
@@ -624,7 +995,7 @@ function CanUseWoodenAxe(pl) {
 }
 function FloatPosToPOS(pos) {
     let F = (x) => Math.floor(x);
-    return [F(pos.x), F(pos.y), F(pos.z)];
+    return [F(pos.x), F(pos.y), F(pos.z), pos.dimid];
 }
 
 function ToIntPos([x, y, z], dimid = 0) {
@@ -656,7 +1027,7 @@ function Debounce(fn, time) {
  */
 function GetSendText(level, msg) {
     let color = level == 0 ? "§b" : level == 1 ? "§a" : level == 2 ? "§e" : "§c";
-    return `§l§d[Wooden_axe] ${color}${msg}`;
+    return `§l§d[WorldEditBE] ${color}${msg}`;
 }
 /**
  * @param pl
@@ -669,7 +1040,7 @@ function ST(pl, level, msg) {
 function SetPos1(pl, pos, out) {
     let PosSel = PosSelector.Get(pl.xuid);
     PosSel.pos1 = pos;
-	if (SelectionMode.has(pl.xuid) && SelectionMode.get(pl.xuid) == "expand")  {
+	if (SelectionMode.has(pl.xuid) && SelectionMode.get(pl.xuid) == "extend")  {
 		PosSel.pos2 = undefined;	// 扩展模式下，选中pos1将重置整个选区
 	}
     PosSel.showGrid(pl)
@@ -677,7 +1048,7 @@ function SetPos1(pl, pos, out) {
 }
 function SetPos2(pl, pos, out) {
     let PosSel = PosSelector.Get(pl.xuid);
-    if (SelectionMode.has(pl.xuid) && SelectionMode.get(pl.xuid) == "expand") {
+    if (SelectionMode.has(pl.xuid) && SelectionMode.get(pl.xuid) == "extend") {
         PosSel.expand(pos, out)
     } else {
         PosSel.pos2 = pos;
@@ -700,6 +1071,9 @@ function onLeft(pl) {
         ParticleGenerator.delete(xuid)
     }
     SelectionMode.delete(xuid)
+    if (!mc.getOnlinePlayers().length) {
+        Portal.stopCheck()
+    }
     return true;
 }
 function onAttackBlock(pl, bl) {
@@ -730,6 +1104,10 @@ function SendModalFormToPlayer(pl, title, content, but1, but2, cb) {
     return pl.sendSimpleForm(title, content, [but1, but2], ["", ""], (pl, id) => {
         cb(pl, (id == 0));
     });
+}
+
+function onPlayerJoin() {
+    Portal.checkForTeleport()
 }
 
 function ClearSelection(pl, out) {
@@ -879,7 +1257,7 @@ function onServerStarted() {
         });
     }).reg();
     new WA_Command("sel", "设置选区模式", PermType.Any).then((cmd) => {
-        cmd.setEnum("WA_SelOptEnum", ["normal", "expand"]);
+        cmd.setEnum("WA_SelOptEnum", ["normal", "extend"]);
         cmd.optional("WA_SelOption", ParamType.Enum, "WA_SelOptEnum", "WA_SelOption", 1);
         cmd.overload(["WA_SelOption"]);
         cmd.setCallback((_cmd, ori, out, res) => {
@@ -965,7 +1343,7 @@ function onServerStarted() {
                     });
                 }
                 else {
-                    SendModalFormToPlayer(pl, "§l§d[Wooden_axe]§4[Warning]", [
+                    SendModalFormToPlayer(pl, "§l§d[WorldEditBE]§4[Warning]", [
                         `§l§cundo数据保存失败!§a详情:`,
                         `§e${saveRes.output}`,
                         `§c继续操作将无法undo!`,
@@ -1030,10 +1408,98 @@ function onServerStarted() {
             }
         });
     }).reg();
+
+    new WA_Command("portal", "Setup a custom portal", PermType.Any).then(cmd=>{
+        cmd.optional("WA_PortalName", ParamType.String);
+        cmd.setEnum("WA_ActionEnum", ["new", "link", "delete", "list", "unlink", "tp"])
+        cmd.mandatory("WA_Action", ParamType.Enum, "WA_ActionEnum", "WA_Action", 1)
+        cmd.overload(["WA_Action", "WA_PortalName"])
+
+        cmd.setCallback((_cmd, ori, out, res) => {
+            let pl = ori.player;
+            if (pl == null) {
+                return out.error(GetSendText(3, "无法通过非玩家执行此命令!"));
+            }
+            if (!CanUseWoodenAxe(pl)) {
+                return out.error(GetSendText(3, "你没有权限使用此命令!"));
+            }
+            let PS = PosSelector.Get(pl.xuid);
+
+            if (res.WA_PortalName) {
+                switch (res.WA_Action) {
+                    case "new": 
+                        if (!PS.pos1 || !PS.pos2) {
+                            return out.error(GetSendText(3, "请先选择传送门区域"));
+                        }
+                        // user is defining a new portal
+                        const pt = Portal.addPortal(res.WA_PortalName, PS.pos1, PS.pos2)
+                        if (pt) {
+                            ParticlePainter.ShowIndicator(MakePosFromObject(pt.tp1))
+                            ParticlePainter.ShowIndicator(MakePosFromObject(pt.tp2))
+                            return out.success(GetSendText(1, `传送门 ${res.WA_PortalName} 已创建`))
+                        } else {
+                            return out.error(GetSendText(3, `传送门 ${res.WA_PortalName} 已存在，请选择其他名称`))
+                        }
+                        break
+                    case "link": 
+                        if (!PS.pos1 || !PS.pos2) {
+                            return out.error(GetSendText(3, "请先选择传送门区域"));
+                        }
+                        const linkTarget = Portal.linkPortal(res.WA_PortalName, PS.pos1, PS.pos2)
+                        if (linkTarget) {
+                            ParticlePainter.ShowIndicator(MakePosFromObject(linkTarget.tp1))
+                            ParticlePainter.ShowIndicator(MakePosFromObject(linkTarget.tp2))
+                            return out.success(GetSendText(1, `已与传送门 ${res.WA_PortalName} 建立连接`))
+                        } else {
+                            return out.error(GetSendText(3, `传送门 ${res.WA_PortalName} 不存在`))
+                        }
+                        break
+                    case "unlink":
+                        if (Portal.unlinkPortal(res.WA_PortalName)) {
+                            return out.success(GetSendText(1, `传送门 ${res.WA_PortalName} 已断开连接`))
+                        } else {
+                            return out.error(GetSendText(3, `传送门 ${res.WA_PortalName} 不存在或没有建立连接`))
+                        }
+                        break
+                    case "delete":
+                        if (Portal.deletePortal(res.WA_PortalName)) {
+                            return out.success(GetSendText(1, `传送门 ${res.WA_PortalName} 已删除`))
+                        } else {
+                            return out.error(GetSendText(3, `传送门 ${res.WA_PortalName} 不存在`))
+                        }
+                        break
+                    case "tp":
+                        const APortal = Portal.getPortal(res.WA_PortalName)
+                        if (APortal) {
+                            pl.teleport(MakePosFromObject(APortal.tpTarget.tp1))
+                            const visualizer = new ParticlePainter("minecraft:blue_flame_particle", 1000)
+                            visualizer.drawCube(MakePosFromObject(APortal.posMin), MakePosFromObject(APortal.posMax))
+                            setTimeout(()=>{
+                                visualizer.clear()
+                            }, 10000)
+                        }
+                }
+            } else {
+                switch (res.WA_Action) {
+                case "list":
+                    const portals = Portal.listPortal()
+                    if (portals.length) {
+                        out.success(GetSendText(1, `已创建了 ${portals.length} 个传送门：`))
+                        portals.forEach((p, i)=>{
+                            out.success(GetSendText(p.linked?1:3, `${i+1}. ${p.name} ${p.linked ? "(已关联)" : "(闲置)"}`))
+                        })
+                    } else {
+                        out.error(GetSendText(3, `没有已创建的传送门`))
+                    }
+                    break
+                }
+            }
+        })
+    }).reg()
 }
 function main() {
-    ll.registerPlugin("Wooden_axe.js", "简易版创世神", [1, 3, 0], {
-        "Author": "Timiya"
+    ll.registerPlugin("WorldEditBE.js", "简易版创世神", [1, 3, 0], {
+        "Author": "Timiya, SublimeIce"
     });
     logger.setTitle("WorldEdit_BE");
     UseLLSEApi = conf.get("UseLLSEApi");
@@ -1044,6 +1510,7 @@ function main() {
     }
     mc.listen("onChangeDim", onChangeDim);
     mc.listen("onLeft", onLeft);
+    mc.listen("onJoin", onPlayerJoin)
     mc.listen("onAttackBlock", onAttackBlock);
 	mc.listen("onDestroyBlock", onDestroyBlock);
     let deb = Debounce(SetPos2, 500);
