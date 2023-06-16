@@ -82,6 +82,21 @@ function GetMaxPos(...args) {
     return max
 }
 
+function CanStandOn(bl) {
+    if (!bl) {
+        return false
+    }
+    if (bl.isAir) {
+        return false
+    }
+    if (bl.translucency) {
+        const name = bl.name
+        const solidNames = ["leaves", "glass","lantern","stone","ice","beacon"]
+        return solidNames.some(n=>name.includes(n))
+    }
+    return true
+}
+
 class PortalInfo {
     fileName;
     portalInfo;
@@ -154,13 +169,13 @@ class PortalInfo {
                 for (let x=scanlineX1; x<=scanlineX2; x++) {
                     blockPortal = mc.getBlock(x, pos2.y-1, scanlineZ1, pos1.dimid)
                     block = mc.getBlock(x, pos2.y, scanlineZ1, pos1.dimid)
-                    if (block.isAir && !blockPortal.isAir) {
+                    if (block.isAir && CanStandOn(blockPortal)) {
                         res = {x, y: pos2.y, z: scanlineZ1, dimid: pos1.dimid}
                         break
                     }
                     blockPortal = mc.getBlock(x, pos2.y-1, scanlineZ2, pos1.dimid)
                     block = mc.getBlock(x, pos2.y, scanlineZ2, pos1.dimid)
-                    if (block.isAir && !blockPortal.isAir) {
+                    if (block.isAir && CanStandOn(blockPortal)) {
                         res = {x, y: pos2.y, z: scanlineZ2, dimid: pos1.dimid}
                         break
                     }
@@ -169,13 +184,13 @@ class PortalInfo {
                     for (let z=scanlineZ1; z<=scanlineZ2; z++) {
                         blockPortal = mc.getBlock(scanlineX1, pos2.y-1, z, pos1.dimid)
                         block = mc.getBlock(scanlineX1, pos2.y, z, pos1.dimid)
-                        if (block.isAir && !blockPortal.isAir) {
+                        if (block.isAir && CanStandOn(blockPortal)) {
                             res = {x: scanlineX1, y: pos2.y, z, dimid: pos1.dimid}
                             break
                         }
                         blockPortal = mc.getBlock(scanlineX2, pos2.y-1, z, pos1.dimid)
                         block = mc.getBlock(scanlineX2, pos2.y, z, pos1.dimid)
-                        if (block.isAir && !blockPortal.isAir) {
+                        if (block.isAir && CanStandOn(blockPortal)) {
                             res = {x: scanlineX2, y: pos2.y, z, dimid: pos1.dimid}
                             break
                         }
@@ -188,8 +203,8 @@ class PortalInfo {
                 if (deltaZ>=0) { deltaZ--; flag=true}
             }
             if (res) {
-                console.log("found a valid empty space to teleport, block is ", block.name, " portal block is ", blockPortal.name)
-                console.log("at ", JSON.stringify(ParsePos(block.pos)), " indicator at ", JSON.stringify(res))
+                //console.log("found a valid empty space to teleport, block is ", block.name, " portal block is ", blockPortal.name)
+                //console.log("at ", JSON.stringify(ParsePos(block.pos)), " indicator at ", JSON.stringify(res))
                 return res
             }
             console.log("all blocks are occupied, teleport to the center")
@@ -1439,7 +1454,7 @@ function onServerStarted() {
 
     new WA_Command("portal", "Setup a custom portal", PermType.Any).then(cmd=>{
         cmd.optional("WA_PortalName", ParamType.String);
-        cmd.setEnum("WA_ActionEnum", ["new", "link", "delete", "list", "unlink", "tp"])
+        cmd.setEnum("WA_ActionEnum", ["new", "link", "delete", "list", "unlink", "update", "tp"])
         cmd.mandatory("WA_Action", ParamType.Enum, "WA_ActionEnum", "WA_Action", 1)
         cmd.overload(["WA_Action", "WA_PortalName"])
 
