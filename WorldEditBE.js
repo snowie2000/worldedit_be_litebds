@@ -106,6 +106,7 @@ class PortalInfo {
     saveFile() {
         file.writeTo(this.fileName, JSON.stringify(this.portalInfo, null, 2))
     }
+    /** 遍历并返回所有传送门信息 */
     listPortal() {
         const portals = Object.keys(this.portalInfo.portals)
         const targets = new Set(Object.keys(this.portalInfo.targets))
@@ -142,12 +143,13 @@ class PortalInfo {
                 zEnd = zStart + 1
             }
             let deltaX=xStart-pos1.x, deltaZ=zStart-pos1.z, flag = true, res = null
+            let block, blockPortal
             while (flag && !res) {
                 const scanlineX1 = pos1.x + deltaX;
                 const scanlineX2 = pos2.x - deltaX;
                 const scanlineZ1 = pos1.z + deltaZ;
                 const scanlineZ2 = pos2.z - deltaZ;
-                let block, blockPortal
+                // let block, blockPortal
                 // find a block that is air and the block underneath it is solid.
                 for (let x=scanlineX1; x<=scanlineX2; x++) {
                     blockPortal = mc.getBlock(x, pos2.y-1, scanlineZ1, pos1.dimid)
@@ -159,7 +161,7 @@ class PortalInfo {
                     blockPortal = mc.getBlock(x, pos2.y-1, scanlineZ2, pos1.dimid)
                     block = mc.getBlock(x, pos2.y, scanlineZ2, pos1.dimid)
                     if (block.isAir && !blockPortal.isAir) {
-                        res = {x, y: pos2.y, z: scanlineZ1, dimid: pos1.dimid}
+                        res = {x, y: pos2.y, z: scanlineZ2, dimid: pos1.dimid}
                         break
                     }
                 }
@@ -186,7 +188,8 @@ class PortalInfo {
                 if (deltaZ>=0) { deltaZ--; flag=true}
             }
             if (res) {
-                console.log("found a valid empty space to teleport")
+                console.log("found a valid empty space to teleport, block is ", block.name, " portal block is ", blockPortal.name)
+                console.log("at ", JSON.stringify(ParsePos(block.pos)), " indicator at ", JSON.stringify(res))
                 return res
             }
             console.log("all blocks are occupied, teleport to the center")
@@ -220,7 +223,7 @@ class PortalInfo {
                         dimid: p1.dimid
                     }, p2.y-p1.y),
                     tp2:getProperPosVertial({
-                        x: p2.x+1, 
+                        x: p2.x, 
                         y: p1.y, 
                         z: Math.floor((p1.z + p2.z)/2),
                         dimid: p1.dimid
@@ -237,13 +240,34 @@ class PortalInfo {
                     tp2:getProperPosVertial({
                         x: Math.floor((p1.x + p2.x) /2), 
                         y: p1.y, 
-                        z: p2.z+1,
+                        z: p2.z,
                         dimid: p1.dimid
                     }, p2.y-p1.y)
                 }
             }
         }
     }
+    /** 更新一个现有的传送门信息 */
+    updatePortal(name, pos1, pos2) {
+        if (!this.portalInfo.portals[name]) 
+            return false
+        const newPortal = {
+            posMin: GetMinPos(ParsePos(pos1), ParsePos(pos2)),
+            posMax: GetMaxPos(ParsePos(pos1), ParsePos(pos2)),
+            name,
+        }
+        newPortal.posMax = {
+            x: newPortal.posMax.x+1,
+            y: newPortal.posMax.y+1,
+            z: newPortal.posMax.z+1,
+            dimid: newPortal.posMax.dimid
+        }
+        newPortal.tpTarget = this.getPortalTpSpot(newPortal.posMin, newPortal.posMax)
+        this.portalInfo.portals[name] = newPortal
+        this.saveFile()
+        return newPortal.tpTarget
+    }
+    /** 创建新的传送门 */
     addPortal(name, pos1, pos2) {
         if (this.portalInfo.portals[name]) 
             return false
@@ -263,6 +287,7 @@ class PortalInfo {
         this.saveFile()
         return newPortal.tpTarget
     }
+    /** 删除传送门，将同时删除目标 */
     deletePortal(name) {
         if (this.portalInfo.portals[name]) {
             delete(this.portalInfo.portals[name])
@@ -273,6 +298,7 @@ class PortalInfo {
             return false;
         }
     }
+    /** 解除传送门关联 */
     unlinkPortal(name) {
         if (this.portalInfo.targets[name]) {
             delete(this.portalInfo.targets[name])
@@ -313,9 +339,9 @@ class PortalInfo {
             if (portal.posMin.dimid !== src.dimid) return false   // 不在同维度直接跳过
             if (!this.portalInfo.targets[portal.name]) return false // 没有关联目标，跳过
 
-            if (portal.posMin.x <= src.x && portal.posMax.x >= src.x &&
-                portal.posMin.y <= src.y && portal.posMax.y > src.y &&
-                portal.posMin.z <= src.z && portal.posMax.z >= src.z) {
+            if (portal.posMin.x < src.x && portal.posMax.x > src.x &&
+                portal.posMin.y < src.y && portal.posMax.y > src.y &&
+                portal.posMin.z < src.z && portal.posMax.z > src.z) {
                     console.log(pl.name," is in portal ",portal.name)
                     res = this.portalInfo.targets[portal.name].tpTarget  
                     return true
@@ -323,9 +349,9 @@ class PortalInfo {
         })
         Object.values(this.portalInfo.targets).some(portalTarget=>{
             if (portalTarget.posMin.dimid !== src.dimid) return false   // 不在同维度直接跳过
-            if (portalTarget.posMin.x <= src.x && portalTarget.posMax.x >= src.x &&
-                portalTarget.posMin.y <= src.y && portalTarget.posMax.y > src.y &&
-                portalTarget.posMin.z <= src.z && portalTarget.posMax.z >= src.z) {
+            if (portalTarget.posMin.x < src.x && portalTarget.posMax.x > src.x &&
+                portalTarget.posMin.y < src.y && portalTarget.posMax.y > src.y &&
+                portalTarget.posMin.z < src.z && portalTarget.posMax.z > src.z) {
                     console.log(pl.name," is in portal target ",portalTarget.name)
                     res = this.portalInfo.portals[portalTarget.name].tpTarget 
                     return true
@@ -351,7 +377,7 @@ class PortalInfo {
         const players = mc.getOnlinePlayers()
         players.forEach(pl=>{
             if (this.inActionPlayers.has(pl.xuid)) return;
-            const target = this.getTeleportTarget(pl.feetPos, pl);
+            const target = this.getTeleportTarget(pl.pos, pl);
             if (target) {
                 this.inActionPlayers.add(pl.xuid)
                 setTimeout(()=>this.inActionPlayers.delete(pl.xuid), 1000)
@@ -768,9 +794,10 @@ class ParticlePainter {
         this.dots = []
     }
     static ShowIndicator(pos, particleName = "minecraft:crop_growth_emitter", duration = 3000, interval = 1000) {
+        const ppos = ParsePos(pos)
         let counter = duration / interval
         let worker = setInterval(()=>{
-            mc.spawnParticle(pos, particleName)
+            mc.spawnParticle(ppos.x+0.5, ppos.y+0.5, ppos.z+0.5, pos.dimid, particleName)
             if (--counter <= 0) {
                 clearInterval(worker)
             }
@@ -1079,7 +1106,8 @@ function onLeft(pl) {
 function onAttackBlock(pl, bl) {
     if (CanUseWoodenAxe(pl) && pl.getHand().type == SelectItem) {
         SetPos1(pl, FloatPosToPOS(bl.pos), (s) => { ST(pl, 1, s); });
-        return false;
+        // return false;
+        return true;
     }
     return true;
 }
@@ -1441,6 +1469,20 @@ function onServerStarted() {
                             return out.error(GetSendText(3, `传送门 ${res.WA_PortalName} 已存在，请选择其他名称`))
                         }
                         break
+                    case "update":
+                        if (!PS.pos1 || !PS.pos2) {
+                            return out.error(GetSendText(3, "请先选择传送门区域"));
+                        }
+                        // user is defining a new portal
+                        const pt2 = Portal.updatePortal(res.WA_PortalName, PS.pos1, PS.pos2)
+                        if (pt2) {
+                            ParticlePainter.ShowIndicator(MakePosFromObject(pt2.tp1))
+                            ParticlePainter.ShowIndicator(MakePosFromObject(pt2.tp2))
+                            return out.success(GetSendText(1, `传送门 ${res.WA_PortalName} 已更新`))
+                        } else {
+                            return out.error(GetSendText(3, `传送门 ${res.WA_PortalName} 不存在，请先创建该传送门`))
+                        }
+                        break
                     case "link": 
                         if (!PS.pos1 || !PS.pos2) {
                             return out.error(GetSendText(3, "请先选择传送门区域"));
@@ -1474,6 +1516,8 @@ function onServerStarted() {
                             pl.teleport(MakePosFromObject(APortal.tpTarget.tp1))
                             const visualizer = new ParticlePainter("minecraft:blue_flame_particle", 1000)
                             visualizer.drawCube(MakePosFromObject(APortal.posMin), MakePosFromObject(APortal.posMax))
+                            ParticlePainter.ShowIndicator(MakePosFromObject(APortal.tpTarget.tp1))
+                            ParticlePainter.ShowIndicator(MakePosFromObject(APortal.tpTarget.tp2))
                             setTimeout(()=>{
                                 visualizer.clear()
                             }, 10000)
