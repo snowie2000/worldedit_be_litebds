@@ -12,6 +12,7 @@ let conf = new JsonConfigFile(`${ConfigPath}config.json`, JSON.stringify({
     "SelectItem": "minecraft:wooden_axe",
     "UseLLSEApi": true,
     "MaxUndo": 10,
+    "UseLLParticle": false,
     "PermSystem": {
         "Enable": false,
         "Perm": "Wooden_axe:CanUse"
@@ -20,17 +21,120 @@ let conf = new JsonConfigFile(`${ConfigPath}config.json`, JSON.stringify({
 let SelectItem;
 let PSConf;
 let UseLLSEApi = false;
+let UseLLParticle = false;
+let MaxUndo = 10
 let NbtMap = new Map();
-let ParticleGenerator = new Map();
 let SelectionMode = new Map();
 let OutputSwitch = true;
 let WorldOrigin = [0, 0, 0] // 世界原点，无偏移坐标
+const llLineColors = ["B", "I", "L", "T", "C", "D", "O", "W", "R", "A", "Y", "G", "V", "S", "P", "E"]
 
 // for compatiblity
 let console = {
     log: logger.info,
     error: logger.error
 }
+
+function hashString(str) {
+    let hash = 0,
+        i, chr;
+    if (str.length === 0) return hash;
+    for (i = 0; i < str.length; i++) {
+        chr = str.charCodeAt(i);
+        hash = ((hash << 5) - hash) + chr;
+        hash |= 0; // Convert to 32bit integer
+    }
+    return hash;
+}
+
+class InfoStore extends Map {
+    xuid;
+    constructor(id) {
+        super()
+        this.xuid = id
+    }
+    /**
+     * @returns {string}
+     */
+    lineColor() {
+        if (this.get("color")) {
+            return this.get("color")
+        }
+        const hash = hashString(this.xuid)
+        const color = llLineColors[hash % llLineColors.length]
+        this.set("color", color)
+        return color
+    }
+    /**
+     * @returns {PosSelector}
+     */
+    selection() {
+        if (!this.get("selection")) {
+            this.set("selection", new PosSelector(undefined, undefined))
+        }
+        return this.get("selection")
+    }
+    /**
+     * 
+     * @param {string} color 
+     * @param {string} particleName 
+     * @param {number} interval 
+     * @returns {ParticlePainter}
+     */
+    painter(color, particleName, interval) {
+        if (!this.get("particlePainter")) {
+            let ps;
+            if (UseLLParticle) {
+                ps = new ParticlePainterLL(color || this.lineColor())
+            } else {
+                ps = new ParticlePainter(particleName, interval)
+            }
+            this.set("particlePainter", ps)
+        }
+        return this.get("particlePainter")
+    }
+}
+
+class PlayerStorage {
+    /**
+     * @type {Map<string, InfoStore>}
+     */
+    store;
+    constructor () {
+        this.store = new Map()
+    }
+    getId(pl) {
+        if (typeof pl !== "string") {
+            pl = pl.xuid
+        }
+        return pl
+    }
+    /**
+     * @param {Player} pl
+     * @param {string} pl
+     * @returns {InfoStore}
+     */
+    get(pl) {
+        const id = this.getId(pl)
+        let s = this.store.get(id)
+        if (!s) {
+            s = new InfoStore(id)
+            this.store.set(id, s)
+        }
+        return s
+    }
+    delete(pl) {
+        const id = this.getId(pl)
+        if (this.store.has(id)) {
+            const s = this.store.get(id)
+            s.selection().clear()
+            s.painter().clear()
+            this.store.delete(id)
+        }
+    }
+}
+
+let PlayerStore = new PlayerStorage()
 
 // 将IntPos/FloatPos转换成js对象
 function ParsePos(pos) {
@@ -694,8 +798,162 @@ function SetOffset(pos, offset) {
     ];
 }
 
+// 利用liteLoaderBDS材质包的粒子绘图类
+class ParticlePainterLL {
+    color;
+    dots;
+    worker;
+    interval;
+    ready;
+    constructor(color = 'G', interval = 1000) {
+        try {
+            this.color = color;
+            this.dots = []
+            this.worker = null;
+            this.interval = interval;// respawn interval
+            this.ready = true
+        } catch (e) {
+            logger.error("粒子效果创建失败!请检查plugins/LiteLoader/LiteLoader.json中的ParticleAPI是否开启")
+        }
+    }
+    makeParticleName(length, direction, back) {
+        const directionStr = ["pY", "mY", "pZ", "mZ", "pX", "mX"]
+        length = length || 1
+        return `ll:line${back?'_back':''}${directionStr[direction]}${this.color}${length}`
+    }
+    binaryDivision(length) {
+        let res = []
+        // 只能创建最大2048的粒子，所以先把数据缩小到2047内
+        while (length>2048) {
+            res.push(2048)
+            length -= 2048
+        }
+        for (let n=2048; n>=1; n/=2) {
+            if (length >= n) {
+                res.push(n)
+                length -= n
+            }
+        }
+        return res
+    }
+    /** start, end: IntPos|FloatPos */
+    drawLine(start, end) {
+        const min = GetMinPos(start, end)
+        const max = GetMaxPos(start, end)
+        let direction = Direction.POS_Y
+        let length = 0
+        if (max.y > min.y) {
+            direction = Direction.POS_Y
+            length = max.y-min.y
+        }
+        if (max.x > min.x) {
+            direction = Direction.POS_X
+            length = max.x-min.x
+        }
+        if (max.z > min.z) {
+            direction = Direction.POS_Z
+            length = max.z-min.z
+        }
+        const segs = this.binaryDivision(length) // 二分法切割，并添加开头的0
+        let lastLen = 0
+        segs.forEach(seg=>{
+            switch (direction) {
+                case Direction.POS_X:
+                    min.x += lastLen
+                    this.dots.push({
+                        p: new FloatPos(min.x+seg/2, min.y, min.z, start.dimid),
+                        name: this.makeParticleName(seg, direction, false)
+                    })
+                    this.dots.push({
+                        p: new FloatPos(min.x+seg/2, min.y, min.z, start.dimid),
+                        name: this.makeParticleName(seg, direction, true)
+                    })
+                    break
+                case Direction.POS_Y:
+                    min.y += lastLen
+                    this.dots.push({
+                        p: new FloatPos(min.x, min.y+seg/2, min.z, start.dimid),
+                        name: this.makeParticleName(seg, direction, false)
+                    })
+                    this.dots.push({
+                        p: new FloatPos(min.x, min.y+seg/2, min.z, start.dimid),
+                        name: this.makeParticleName(seg, direction, true)
+                    })
+                    break
+                case Direction.POS_Z:
+                    min.z += lastLen
+                    this.dots.push({
+                        p: new FloatPos(min.x, min.y, min.z+seg/2, start.dimid),
+                        name: this.makeParticleName(seg, direction, false)
+                    })
+                    this.dots.push({
+                        p: new FloatPos(min.x, min.y, min.z+seg/2, start.dimid),
+                        name: this.makeParticleName(seg, direction, true)
+                    })
+                    break
+            }
+            lastLen = seg
+        })
+
+        this.start();
+    }
+    drawCube(start, end) {
+        const maxSizeAllowed = 40960
+        const s = GetMinPos(ParsePos(start), ParsePos(end))
+        const e = GetMaxPos(ParsePos(start), ParsePos(end))
+        // check if the size is too large
+
+        if (e.x-s.x>maxSizeAllowed || e.y-s.y>maxSizeAllowed || e.z-s.z>maxSizeAllowed) {
+            return;
+        }
+
+        // add 12 sides
+        this.drawLine(s, {...s, x:e.x})
+        this.drawLine({...s, y: e.y}, {...s, y: e.y, x:e.x})
+        this.drawLine({...s, z: e.z}, {...s, z: e.z, x:e.x})
+        this.drawLine({...s, y: e.y, z: e.z}, {...s, y: e.y, z: e.z, x:e.x})
+
+        this.drawLine(s, {...s, y:e.y})
+        this.drawLine({...s, x: e.x}, {...s, x: e.x, y:e.y})
+        this.drawLine({...s, z: e.z}, {...s, z: e.z, y:e.y})
+        this.drawLine({...s, x: e.x, z: e.z}, {...s, x: e.x, z: e.z, y:e.y})
+
+        this.drawLine(s, {...s, z:e.z})
+        this.drawLine({...s, y: e.y}, {...s, y: e.y, z:e.z})
+        this.drawLine({...s, x: e.x}, {...s, x: e.x, z:e.z})
+        this.drawLine({...s, y: e.y, x: e.x}, {...s, y: e.y, x: e.x, z:e.z})
+
+        this.start()
+    }
+    start() {
+        if (this.worker) {
+            return;
+        }
+        this.worker = setInterval(()=>this.paint(), this.interval)
+    }
+    stop() {
+        if (this.worker){
+            clearInterval(this.worker)
+            this.worker = null
+        }
+    }
+    paint() {
+        if (this.dots.length) {
+            this.dots.forEach((dot) => {
+                // this.ps.spawnParticle(dot, this.particleName)
+                mc.spawnParticle(dot.p, dot.name)
+            })
+        } else {
+            this.stop()
+        }
+    }
+    clear() {
+        this.stop()
+        this.dots = []
+    }
+}
+
 class ParticlePainter {
-    // ps;
     particleName;
     dots;
     worker;
@@ -835,7 +1093,7 @@ class UndoInstance {
         }
         // retrieve old undo list for current player and append new undo instance to it.
         const undoList = this.Instances.get(pl.xuid) || []
-        if (undoList.length >= conf.MaxUndo) {
+        if (undoList.length >= MaxUndo) {
             undoList.splice(0, 1)
         }
         undoList.push(new UndoInstance(UndoName, UndoPos, GetMcMaxPhase(pos1, pos2)))
@@ -922,24 +1180,13 @@ class CopyInstance {
 class PosSelector {
     pos1;
     pos2;
-    static Instance = new Map();
-    static Get(xuid) {
-        let inst = this.Instance.get(xuid);
-        if (inst == null) {
-            inst = new PosSelector(undefined, undefined);
-            this.Instance.set(xuid, inst);
-        }
-        return inst;
-    }
-    static Has(xuid) {
-        return this.Instance.has(xuid);
-    }
-    static Del(xuid) {
-        return this.Instance.delete(xuid);
-    }
     constructor(pos1, pos2) {
         this.pos1 = pos1;
         this.pos2 = pos2;
+    }
+    clear() {
+        this.pos1 = undefined;
+        this.pos2 = undefined;
     }
     expand(pos, out) {
         if (this.pos1 == undefined) {
@@ -975,14 +1222,9 @@ class PosSelector {
         }
     }
     showGrid(pl) {
-		let visualizer = ParticleGenerator.get(pl.xuid)
-		visualizer && visualizer.clear()
+		let visualizer = PlayerStore.get(pl.xuid).painter(undefined, "minecraft:balloon_gas_particle")
+		visualizer.clear()
         if (this.pos1 && this.pos2) {            
-            if (!visualizer) {
-                visualizer = new ParticlePainter("minecraft:balloon_gas_particle", 1000)
-                // visualizer = new ParticlePainter("minecraft:basic_flame_particle", 1000)
-                ParticleGenerator.set(pl.xuid, visualizer)
-            }
             const small = GetMcMinPhase(this.pos1, this.pos2)
             const big = GetMcMaxPhase(this.pos1, this.pos2)
             visualizer.drawCube(ToFloatPos(small, this.pos1[3]), ToFloatPos([big[0]+1, big[1]+1, big[2]+1], this.pos1[3]))
@@ -1080,7 +1322,7 @@ function ST(pl, level, msg) {
     pl.tell(GetSendText(level, msg));
 }
 function SetPos1(pl, pos, out) {
-    let PosSel = PosSelector.Get(pl.xuid);
+    let PosSel = PlayerStore.get(pl.xuid).selection();
     PosSel.pos1 = pos;
 	if (SelectionMode.has(pl.xuid) && SelectionMode.get(pl.xuid) == "extend")  {
 		PosSel.pos2 = undefined;	// 扩展模式下，选中pos1将重置整个选区
@@ -1089,7 +1331,7 @@ function SetPos1(pl, pos, out) {
     out(`pos1选择成功(${pos[0]},${pos[1]},${pos[2]},${pl.pos.dim})`);
 }
 function SetPos2(pl, pos, out) {
-    let PosSel = PosSelector.Get(pl.xuid);
+    let PosSel = PlayerStore.get(pl.xuid).selection();
     if (SelectionMode.has(pl.xuid) && SelectionMode.get(pl.xuid) == "extend") {
         PosSel.expand(pos, out)
     } else {
@@ -1105,13 +1347,7 @@ function onChangeDim(pl, _dimid) {
 }
 function onLeft(pl) {
     let xuid = pl.xuid;
-    if (PosSelector.Has(xuid)) {
-        PosSelector.Del(xuid);
-    }
-    if (ParticleGenerator.has(xuid)) {
-        ParticleGenerator.get(xuid).clear()
-        ParticleGenerator.delete(xuid)
-    }
+    PlayerStore.delete(xuid)
     SelectionMode.delete(xuid)
     if (!mc.getOnlinePlayers().length) {
         Portal.stopCheck()
@@ -1153,17 +1389,9 @@ function onPlayerJoin() {
 }
 
 function ClearSelection(pl, out) {
-    if (PosSelector.Has(pl.xuid)) {
-        PosSelector.Del(pl.xuid)
-        out && out.success(GetSendText(0, "清除选点成功!"));
-    }
-    else {
-        out && out.error(GetSendText(3, "你当前还没有选点!"));
-    }
-    const pg = ParticleGenerator.get(pl.xuid)
-    if (pg) {
-        pg.clear()
-    }
+    PlayerStore.get(pl.xuid).selection().clear()
+    out && out.success(GetSendText(0, "清除选点成功!"));
+    PlayerStore.get(pl.xuid).painter().clear()
 }
 function onServerStarted() {
     //pos1
@@ -1210,7 +1438,7 @@ function onServerStarted() {
                 return out.error(GetSendText(3, "无法通过非玩家执行此命令!"));
             }
             if (CanUseWoodenAxe(pl)) {
-                let PS = PosSelector.Get(pl.xuid);
+                let PS = PlayerStore.get(pl.xuid).selection();
                 if (!PS.pos1 || !PS.pos2) {
                     return out.error(GetSendText(3, "复制失败,请检查pos1和pos2是否选择"));
                 }
@@ -1335,7 +1563,7 @@ function onServerStarted() {
                 return out.error(GetSendText(3, "无法通过非玩家执行此命令!"));
             }
             if (CanUseWoodenAxe(pl)) {
-                let PS = PosSelector.Get(pl.xuid);
+                let PS = PlayerStore.get(pl.xuid).selection();
                 if (!PS.pos1 || !PS.pos2) {
                     return out.error(GetSendText(3, "设置失败,请检查pos1和pos2是否选择"));
                 }
@@ -1465,7 +1693,7 @@ function onServerStarted() {
             if (!CanUseWoodenAxe(pl)) {
                 return out.error(GetSendText(3, "你没有权限使用此命令!"));
             }
-            let PS = PosSelector.Get(pl.xuid);
+            let PS = PlayerStore.get(pl.xuid).selection();
 
             if (res.WA_PortalName) {
                 switch (res.WA_Action) {
@@ -1561,7 +1789,9 @@ function main() {
     });
     logger.setTitle("WorldEdit_BE");
     UseLLSEApi = conf.get("UseLLSEApi");
+    MaxUndo = conf.get("MaxUndo")
     PSConf = conf.get("PermSystem");
+    UseLLParticle = conf.get("UseLLParticle");
     SelectItem = conf.get("SelectItem");
     if (PSConf.Enable) {
         AutoCreatePermData(PSConf.Perm);
