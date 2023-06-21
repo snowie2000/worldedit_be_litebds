@@ -16,7 +16,8 @@ let conf = new JsonConfigFile(`${ConfigPath}config.json`, JSON.stringify({
     "PermSystem": {
         "Enable": false,
         "Perm": "Wooden_axe:CanUse"
-    }
+    },
+    "PlayerData": {}
 }, null, 2));
 let SelectItem;
 let PSConf;
@@ -35,6 +36,30 @@ let console = {
     error: logger.error
 }
 
+/**
+ * 配置文件基础类，可以实现从磁盘读取和保存配置文件的功能
+ */
+class ConfigFile {
+    fileName;
+    template;
+    constructor(filename, defaultContent) {
+        this.fileName = `${ConfigPath}${filename}`;
+        this.template = typeof defaultContent === "string" ? defaultContent : JSON.stringify(defaultContent, null, 2);
+        this.parseFile();
+    }
+    parseFile() {
+        if (File.exists(this.fileName)) {
+            this.content = JSON.parse(file.readFrom(this.fileName)) || JSON.stringify(this.template);
+        } else {
+            new JsonConfigFile(this.fileName, this.template);
+            this.content = JSON.parse(this.template)
+        }
+    }
+    saveFile() {
+        file.writeTo(this.fileName, JSON.stringify(this.content, null, 2))
+    }
+}
+
 function hashString(str) {
     let hash = 0,
         i, chr;
@@ -47,11 +72,37 @@ function hashString(str) {
     return hash;
 }
 
+class PersistentStore extends ConfigFile {
+    constructor() {
+        super("player.json", {})
+    }
+    /**
+     * 获得对应用户的数据
+     * @param {string} xuid 
+     */
+    get(xuid) {
+        if (!this.content[xuid]) {
+            this.content[xuid] = {}
+        }
+        return this.content[xuid]
+    }
+}
+
+let PlayerPrefData = new PersistentStore()
+
 class InfoStore extends Map {
     xuid;
+    prefData;
+    painterList;
+    /**
+     * player对应的数据管理类，部分数据在内存中，部分持久化到配置文件
+     * @param {string} id 
+     */
     constructor(id) {
         super()
         this.xuid = id
+        this.prefData = PlayerPrefData.get(id)
+        this.painterList = new Map()
     }
     /**
      * @returns {string}
@@ -60,17 +111,37 @@ class InfoStore extends Map {
         if (this.get("color")) {
             return this.get("color")
         }
+        if (this.prefData.color) {
+            return this.prefData.color  // 如果用户设置了自己想要的颜色，则使用配置文件中保存的
+        }
         const hash = hashString(this.xuid)
         const color = llLineColors[hash % llLineColors.length]
         this.set("color", color)
         return color
     }
     /**
+     * 设置用户线条颜色，空白则使用默认颜色
+     * @param {string|number|undefined} color 
+     */
+    setLineColor(color) {
+        if (typeof color === "number") {
+            color = llLineColors[color]
+        }
+        if (color) {
+            this.prefData.color = color
+            this.set("color", color)
+        } else {
+            delete(this.prefData.color)
+            this.delete("color")
+        }
+        PlayerPrefData.saveFile()
+    }
+    /**
      * @returns {PosSelector}
      */
     selection() {
         if (!this.get("selection")) {
-            this.set("selection", new PosSelector(undefined, undefined))
+            this.set("selection", new PosSelector(undefined, undefined, this.xuid))
         }
         return this.get("selection")
     }
@@ -81,17 +152,33 @@ class InfoStore extends Map {
      * @param {number} interval 
      * @returns {ParticlePainter}
      */
-    painter(color, particleName, interval) {
-        if (!this.get("particlePainter")) {
+    painter(paintName, color, particleName, interval, overwrite = false) {
+        // 覆盖原有的painter则需要释放掉对应的资源
+        if (this.painterList.has(paintName)) {
+            this.painterList.get(paintName).clear()
+            this.painterList.delete(paintName)
+        }
+
+        if (!this.painterList.get(paintName)) {
             let ps;
             if (UseLLParticle) {
                 ps = new ParticlePainterLL(color || this.lineColor())
             } else {
                 ps = new ParticlePainter(particleName, interval)
             }
-            this.set("particlePainter", ps)
+            this.painterList.set(paintName, ps)
         }
-        return this.get("particlePainter")
+        return this.painterList.get(paintName)
+    }
+    /** 释放该玩家对应的所有需要管理的资源 */
+    destroy() {
+        // 清空painter
+        this.painterList.forEach(ps=>ps.clear())
+        // 清空选区
+        const selection = this.get("selection")
+        if (selection) {
+            selection.clear()
+        }
     }
 }
 
@@ -127,8 +214,7 @@ class PlayerStorage {
         const id = this.getId(pl)
         if (this.store.has(id)) {
             const s = this.store.get(id)
-            s.selection().clear()
-            s.painter().clear()
+            s.destroy()
             this.store.delete(id)
         }
     }
@@ -155,12 +241,17 @@ function ParsePos(pos) {
         dimid: pos.dimid
     }
 }
-function MakePos(x, y, z, dimid = 0) {
-    return new FloatPos(x, y, z, dimid)
-}
-function MakePosFromObject(pos) {
+function MakePos(...args) {
+    if (args.length > 3) {
+        return new FloatPos(...args)
+    }
+    const pos = args[0]
+    if (Array.isArray(pos)) {
+        return new FloatPos(pos[0], pos[1], pos[2], pos[3] || 0)
+    }
     return new FloatPos(pos.x, pos.y, pos.z, pos.dimid)
 }
+
 function GetMinPos(...args) {
     if (!args.length) {
         return null
@@ -201,34 +292,19 @@ function CanStandOn(bl) {
     return true
 }
 
-class PortalInfo {
-    fileName;
-    portalInfo;
+class PortalInfo extends ConfigFile {
     jsonTemplate;
     checker;
     inActionPlayers;
     constructor() {
-        this.fileName = `${ConfigPath}portal.json`;
-        this.jsonTemplate = {portals: {}, targets: {}}
-        this.parseFile();
+        super("portal.json", {portals: {}, targets: {}})
         this.checker = 0
         this.inActionPlayers = new Set()
     }
-    parseFile() {
-        if (File.exists(this.fileName)) {
-            this.portalInfo = JSON.parse(file.readFrom(this.fileName)) || this.jsonTemplate;
-        } else {
-            new JsonConfigFile(`${ConfigPath}portal.json`, JSON.stringify(this.jsonTemplate, null, 2));
-            this.portalInfo = {...this.jsonTemplate}
-        }
-    }
-    saveFile() {
-        file.writeTo(this.fileName, JSON.stringify(this.portalInfo, null, 2))
-    }
     /** 遍历并返回所有传送门信息 */
     listPortal() {
-        const portals = Object.keys(this.portalInfo.portals)
-        const targets = new Set(Object.keys(this.portalInfo.targets))
+        const portals = Object.keys(this.content.portals)
+        const targets = new Set(Object.keys(this.content.targets))
         return portals.map(p=>({
             name: p,
             linked: targets.has(p)
@@ -368,7 +444,7 @@ class PortalInfo {
     }
     /** 更新一个现有的传送门信息 */
     updatePortal(name, pos1, pos2) {
-        if (!this.portalInfo.portals[name]) 
+        if (!this.content.portals[name]) 
             return false
         const newPortal = {
             posMin: GetMinPos(ParsePos(pos1), ParsePos(pos2)),
@@ -382,13 +458,13 @@ class PortalInfo {
             dimid: newPortal.posMax.dimid
         }
         newPortal.tpTarget = this.getPortalTpSpot(newPortal.posMin, newPortal.posMax)
-        this.portalInfo.portals[name] = newPortal
+        this.content.portals[name] = newPortal
         this.saveFile()
         return newPortal.tpTarget
     }
     /** 创建新的传送门 */
     addPortal(name, pos1, pos2) {
-        if (this.portalInfo.portals[name]) 
+        if (this.content.portals[name]) 
             return false
         const newPortal = {
             posMin: GetMinPos(ParsePos(pos1), ParsePos(pos2)),
@@ -402,15 +478,15 @@ class PortalInfo {
             dimid: newPortal.posMax.dimid
         }
         newPortal.tpTarget = this.getPortalTpSpot(newPortal.posMin, newPortal.posMax)
-        this.portalInfo.portals[name] = newPortal
+        this.content.portals[name] = newPortal
         this.saveFile()
         return newPortal.tpTarget
     }
     /** 删除传送门，将同时删除目标 */
     deletePortal(name) {
-        if (this.portalInfo.portals[name]) {
-            delete(this.portalInfo.portals[name])
-            delete(this.portalInfo.targets[name])
+        if (this.content.portals[name]) {
+            delete(this.content.portals[name])
+            delete(this.content.targets[name])
             this.saveFile()
             return true
         } else {
@@ -419,8 +495,8 @@ class PortalInfo {
     }
     /** 解除传送门关联 */
     unlinkPortal(name) {
-        if (this.portalInfo.targets[name]) {
-            delete(this.portalInfo.targets[name])
+        if (this.content.targets[name]) {
+            delete(this.content.targets[name])
             this.saveFile()
             return true
         } else {
@@ -428,10 +504,10 @@ class PortalInfo {
         }
     }
     getPortal(name) {
-        return this.portalInfo.portals[name]
+        return this.content.portals[name]
     }
     linkPortal(name, pos1, pos2) {
-        if (this.portalInfo.portals[name]) {
+        if (this.content.portals[name]) {
             const newTarget = {
                 posMin: GetMinPos(ParsePos(pos1), ParsePos(pos2)),
                 posMax: GetMaxPos(ParsePos(pos1), ParsePos(pos2)),
@@ -444,7 +520,7 @@ class PortalInfo {
                 dimid: newTarget.posMax.dimid
             }
             newTarget.tpTarget = this.getPortalTpSpot(newTarget.posMin, newTarget.posMax)
-            this.portalInfo.targets[name] = newTarget
+            this.content.targets[name] = newTarget
             this.saveFile()
             logger.error(JSON.stringify(newTarget.tpTarget))
             return newTarget.tpTarget   // 成功则返回传送目标点
@@ -454,25 +530,25 @@ class PortalInfo {
     getTeleportTarget(pos, pl) {    // 给定一个坐标，返回传送至的坐标，如不在任何传送门内，则返回null
         let res = null
         let src = ParsePos(pos)
-        Object.values(this.portalInfo.portals).some(portal=>{
+        Object.values(this.content.portals).some(portal=>{
             if (portal.posMin.dimid !== src.dimid) return false   // 不在同维度直接跳过
-            if (!this.portalInfo.targets[portal.name]) return false // 没有关联目标，跳过
+            if (!this.content.targets[portal.name]) return false // 没有关联目标，跳过
 
             if (portal.posMin.x < src.x && portal.posMax.x > src.x &&
                 portal.posMin.y < src.y && portal.posMax.y > src.y &&
                 portal.posMin.z < src.z && portal.posMax.z > src.z) {
                     console.log(pl.name," is in portal ",portal.name)
-                    res = this.portalInfo.targets[portal.name].tpTarget  
+                    res = this.content.targets[portal.name].tpTarget  
                     return true
                 }
         })
-        Object.values(this.portalInfo.targets).some(portalTarget=>{
+        Object.values(this.content.targets).some(portalTarget=>{
             if (portalTarget.posMin.dimid !== src.dimid) return false   // 不在同维度直接跳过
             if (portalTarget.posMin.x < src.x && portalTarget.posMax.x > src.x &&
                 portalTarget.posMin.y < src.y && portalTarget.posMax.y > src.y &&
                 portalTarget.posMin.z < src.z && portalTarget.posMax.z > src.z) {
                     console.log(pl.name," is in portal target ",portalTarget.name)
-                    res = this.portalInfo.portals[portalTarget.name].tpTarget 
+                    res = this.content.portals[portalTarget.name].tpTarget 
                     return true
                 }
         })
@@ -679,8 +755,7 @@ function BetterFill(pl, pos1, pos2, type, states) {
  */
 function SaveStructure(pl, name, pos1, pos2, type = "memory") {
     if (UseLLSEApi) {
-        let dimid = pl.pos.dimid;
-        let nbt = mc.getStructure(new IntPos(...pos1, dimid), new IntPos(...pos2, dimid));
+        let nbt = mc.getStructure(new IntPos(...pos1), new IntPos(...pos2));
         if (!nbt) {
             return { "success": false, "output": "Function mc.getStructure execute failed!" };
         }
@@ -703,12 +778,11 @@ function SaveStructure(pl, name, pos1, pos2, type = "memory") {
  */
 function LoadStructure(pl, name, pos1, mirror = 0, rotation = 0) {
     if (UseLLSEApi) {
-        let dimid = pl.pos.dimid;
         let nbt = NbtMap.get(name);
         if (!nbt) {
             return { "success": false, "output": "Not find structure nbt!" };
         }
-        let r = mc.setStructure(nbt, new IntPos(...pos1, dimid), mirror, rotation);
+        let r = mc.setStructure(nbt, new IntPos(...pos1), mirror, rotation);
         if (!r) {
             return { "success": false, "output": "Function mc.setStructure execute failed!" };
         }
@@ -773,28 +847,32 @@ function GetMcMinPhase(pos1, pos2) {
     return [
         pos1[0] < pos2[0] ? pos1[0] : pos2[0],
         pos1[1] < pos2[1] ? pos1[1] : pos2[1],
-        pos1[2] < pos2[2] ? pos1[2] : pos2[2]
+        pos1[2] < pos2[2] ? pos1[2] : pos2[2],
+        pos1[3]
     ];
 }
 function GetMcMaxPhase(pos1, pos2) {
     return [
         pos1[0] > pos2[0] ? pos1[0] : pos2[0],
         pos1[1] > pos2[1] ? pos1[1] : pos2[1],
-        pos1[2] > pos2[2] ? pos1[2] : pos2[2]
+        pos1[2] > pos2[2] ? pos1[2] : pos2[2],
+        pos1[3]
     ];
 }
 function GetOffset(pos1, pos2) {
     return [
         pos2[0] - pos1[0],
         pos2[1] - pos1[1],
-        pos2[2] - pos1[2]
+        pos2[2] - pos1[2],
+        pos1[3]
     ];
 }
 function SetOffset(pos, offset) {
     return [
         pos[0] + offset[0],
         pos[1] + offset[1],
-        pos[2] + offset[2]
+        pos[2] + offset[2],
+        pos[3]
     ];
 }
 
@@ -1150,6 +1228,11 @@ class CopyInstance {
         this.Instances.set(pl.xuid, new CopyInstance(CopyName, targetVertices.p1, targetVertices.p2, playerPos));
         return res;
     }
+    /**
+     * 获得对应player的复制实例
+     * @param {string} xuid 
+     * @returns {CopyInstance}
+     */
     static Get(xuid) {
         return this.Instances.get(xuid);
     }
@@ -1158,8 +1241,8 @@ class CopyInstance {
     }
     constructor(copyName, pos1, pos2, playerPos) {
         this.copyName = copyName;
-        this.pos1 = pos1;
-        this.pos2 = pos2;
+        this.pos1 = pos1;   // 必定是最小坐标
+        this.pos2 = pos2;   // 必定是最大坐标
         this.origin = playerPos; // 记住复制时玩家的位置，在粘贴时需要计算偏移量
     }
     /**
@@ -1170,23 +1253,93 @@ class CopyInstance {
         let posByOffset = SetOffset(pos, GetOffset(this.origin, this.pos1)) // 根据复制时的坐标反推粘贴时的坐标
         return LoadStructure(pl, this.copyName, posByOffset, mirror, rotation);
     }
+    doStack(pos, direction, count, spacing, callback) {
+        const targetPos = this.getTargetPos(pos)
+        const min = GetMcMinPhase(targetPos.p1, targetPos.p2)
+        const max = GetMcMaxPhase(targetPos.p1, targetPos.p2)
+        const dimension= {
+                x: Math.abs(min[0] - max[0])+1,
+                y: Math.abs(min[1] - max[1])+1,
+                z: Math.abs(min[2] - max[2])+1
+            }
+        let flag = true
+
+        for (let i=0; i<count; ++i) {
+            const endPoint = [min[0] + dimension.x, min[1] + dimension.y, min[2] + dimension.z, min[3]]
+            if (!callback(min, endPoint)) {
+                flag = false
+                break
+            }
+
+            switch (direction) {
+                case 'east': 
+                    min[0] += dimension.x + spacing
+                    break
+                case 'west':
+                    min[0] -= dimension.x + spacing
+                    break
+                case 'north':
+                    min[2] -= dimension.z + spacing
+                    break
+                case 'south':
+                    min[2] += dimension.z + spacing
+                    break
+                case 'up':
+                    min[1] += dimension.y + spacing
+                    break
+                case 'down':
+                    min[1] -= dimension.y + spacing
+                    break
+            }
+        }
+        return flag
+    }
+    stack(pl, pos, direction, count, spacing) {
+        return this.doStack(pos, direction, count, spacing ?? 0, (minPos, maxPos)=>{
+            const result = LoadStructure(pl, this.copyName, minPos, 0, 0);
+            return result && result.success
+        })
+    }
     getTargetPos(pos) {
         return {
             p1: SetOffset(pos, GetOffset(this.origin, this.pos1)),
             p2: SetOffset(pos, GetOffset(this.origin, this.pos2))
         };
     }
+    getStackPos(target, direction, count, spacing) {
+        let start, stop
+        this.doStack(target, direction, count, spacing ?? 0, (minPos, maxPos)=>{
+            if (!start) {
+                start = [...minPos]
+            } else {
+                start = GetMcMinPhase(start, minPos)
+            }
+            if (!stop) {
+                stop = [...maxPos]
+            } else {
+                stop = GetMcMaxPhase(stop, maxPos)
+            }
+            return true
+        })
+        return {
+            p1: start,
+            p2: stop
+        }
+    }
 }
 class PosSelector {
     pos1;
     pos2;
-    constructor(pos1, pos2) {
+    xuid;
+    constructor(pos1, pos2, xuid) {
         this.pos1 = pos1;
         this.pos2 = pos2;
+        this.xuid = xuid;
     }
     clear() {
         this.pos1 = undefined;
         this.pos2 = undefined;
+        PlayerStore.get(this.xuid).painter("selection").clear()
     }
     expand(pos, out) {
         if (this.pos1 == undefined) {
@@ -1199,30 +1352,17 @@ class PosSelector {
         else {
             let min = GetMcMinPhase(GetMcMinPhase(this.pos1, this.pos2), pos);
             let max = GetMcMaxPhase(GetMcMaxPhase(this.pos1, this.pos2), pos);
-            // if (pos[0] < min[0]) {
-            //     min[0] = pos[0];
-            // }
-            // else if (pos[0] > max[0]) {
-            //     max[0] = pos[0];
-            // }
-            // if (pos[1] < min[1]) {
-            //     min[1] = pos[1];
-            // }
-            // else if (pos[1] > max[1]) {
-            //     max[1] = pos[1];
-            // }
-            // if (pos[2] < min[2]) {
-            //     min[2] = pos[2];
-            // }
-            // else if (pos[2] > max[2]) {
-            //     max[2] = pos[2];
-            // }
             this.pos1 = min;
             this.pos2 = max;
         }
     }
-    showGrid(pl) {
-		let visualizer = PlayerStore.get(pl.xuid).painter(undefined, "minecraft:balloon_gas_particle")
+    /** 刷新visualizer的显示 */
+    refresh() {
+        PlayerStore.get(this.xuid).painter("selection", undefined, "minecraft:balloon_gas_particle", 1000, true)
+        this.showGrid()
+    }
+    showGrid() {
+		let visualizer = PlayerStore.get(this.xuid).painter("selection", undefined, "minecraft:balloon_gas_particle")
 		visualizer.clear()
         if (this.pos1 && this.pos2) {            
             const small = GetMcMinPhase(this.pos1, this.pos2)
@@ -1391,7 +1531,6 @@ function onPlayerJoin() {
 function ClearSelection(pl, out) {
     PlayerStore.get(pl.xuid).selection().clear()
     out && out.success(GetSendText(0, "清除选点成功!"));
-    PlayerStore.get(pl.xuid).painter().clear()
 }
 function onServerStarted() {
     //pos1
@@ -1526,6 +1665,69 @@ function onServerStarted() {
             }
         });
     }).reg();
+
+    new WA_Command("stack", "Stack copied structures", PermType.Any).then((cmd) => {
+        cmd.mandatory("StackCount", ParamType.Int);
+        cmd.setEnum("Direction", ["up", "down", "north", "south", "east", "west"]);
+        cmd.optional("StackDirection", ParamType.Enum, "Direction", "StackDirection", 1);
+        cmd.optional("StatckSpacing", ParamType.Int);
+        cmd.overload(["StackCount", "StatckSpacing", "StackDirection"]);
+
+        cmd.setCallback((_cmd, ori, out, res) => {
+            let pl = ori.player;
+            if (pl == null) {
+                return out.error(GetSendText(3, "无法通过非玩家执行此命令!"));
+            }
+            if (res.StackCount <= 0) {
+                return out.error(GetSendText(3, "堆叠数量必须大于0!"));
+            }
+            // 计算玩家的朝向
+            const DirectionDict = ["south", "west", "north", "east", "up", "down"];
+            let plDirection = DirectionDict[pl.direction.toFacing()]
+            if (pl.direction.pitch>60) {
+                plDirection = "down"
+            }
+            if (pl.direction.pitch< -60) {
+                plDirection = "up"
+            }
+
+            if (CanUseWoodenAxe(pl)) {
+                let CI = CopyInstance.Get(pl.xuid);
+                if (!CI) {
+                    return out.error(GetSendText(3, "请先复制结构!"));
+                }
+                let pos = pl.pos;
+                const direction = res["StackDirection"] || plDirection  // 如果玩家输入了方向，则使用玩家输入的方向，否则使用玩家朝向
+                let PlacePos = FloatPosToPOS(pos);
+                let targetPos = CI.getStackPos(PlacePos, direction, res.StackCount, res.StatckSpacing); // 计算stack后会占用的空间坐标
+                //console.log(JSON.stringify(targetPos))
+
+                const visualizer = PlayerStore.get(pl).painter("target", "V", "minecraft:blue_flame_particle", 1000)
+                visualizer.drawCube(MakePos(targetPos.p1), MakePos(targetPos.p2))
+                setTimeout(()=>{
+                    visualizer.clear()
+                }, 10000)
+
+                UndoInstance.Save(pl, targetPos.p1, targetPos.p2);  // 在粘贴前记录粘贴位置上的信息
+                let PRes = CI.stack(pl, PlacePos, direction, res.StackCount, res.StatckSpacing);
+                if (PRes) {
+                    out.success(GetSendText(1, "堆叠成功,使用/undo恢复操作之前!"));
+                    RefreshAllPlayerChunk(PlacePos, [
+                        CI.pos2[0] - CI.pos1[0] + PlacePos[0],
+                        CI.pos2[1] - CI.pos1[1] + PlacePos[1],
+                        CI.pos2[1] - CI.pos1[0] + PlacePos[1]
+                    ], pl.pos.dimid);
+                } else {
+                    UndoInstance.Pop(pl.xuid).destroy(pl); // 粘贴失败时删除之前记录的粘贴位置上的信息
+                }
+            }
+            else {
+                out.error(GetSendText(3, "你没有权限使用此命令!"));
+            }
+        });
+    }).reg();
+
+
     new WA_Command("sel", "设置选区模式", PermType.Any).then((cmd) => {
         cmd.setEnum("WA_SelOptEnum", ["normal", "extend"]);
         cmd.optional("WA_SelOption", ParamType.Enum, "WA_SelOptEnum", "WA_SelOption", 1);
@@ -1679,6 +1881,26 @@ function onServerStarted() {
         });
     }).reg();
 
+    new WA_Command("color", "Change selection frame color", PermType.Any).then(cmd=>{
+        cmd.mandatory("ColorIndex", ParamType.Int);
+        cmd.overload(["ColorIndex"])
+
+        cmd.setCallback((_cmd, ori, out, res) => {
+            let coloridx = parseInt(res.ColorIndex)
+            if (coloridx < 0 || coloridx >= llLineColors.length) {
+                return out.error(GetSendText(3, "只能选择1-16的颜色"))
+            }
+            const pldata = PlayerStore.get(ori.player.xuid)
+            if (coloridx === 0) {
+                pldata.setLineColor()
+            } else {
+                pldata.setLineColor(coloridx)
+            }
+            pldata.selection().refresh();
+            out.success("显示颜色已更新")
+        })
+    }).reg()
+
     new WA_Command("portal", "Setup a custom portal", PermType.Any).then(cmd=>{
         cmd.optional("WA_PortalName", ParamType.String);
         cmd.setEnum("WA_ActionEnum", ["new", "link", "delete", "list", "unlink", "update", "tp"])
@@ -1704,8 +1926,8 @@ function onServerStarted() {
                         // user is defining a new portal
                         const pt = Portal.addPortal(res.WA_PortalName, PS.pos1, PS.pos2)
                         if (pt) {
-                            ParticlePainter.ShowIndicator(MakePosFromObject(pt.tp1))
-                            ParticlePainter.ShowIndicator(MakePosFromObject(pt.tp2))
+                            ParticlePainter.ShowIndicator(MakePos(pt.tp1))
+                            ParticlePainter.ShowIndicator(MakePos(pt.tp2))
                             return out.success(GetSendText(1, `传送门 ${res.WA_PortalName} 已创建`))
                         } else {
                             return out.error(GetSendText(3, `传送门 ${res.WA_PortalName} 已存在，请选择其他名称`))
@@ -1718,8 +1940,8 @@ function onServerStarted() {
                         // user is defining a new portal
                         const pt2 = Portal.updatePortal(res.WA_PortalName, PS.pos1, PS.pos2)
                         if (pt2) {
-                            ParticlePainter.ShowIndicator(MakePosFromObject(pt2.tp1))
-                            ParticlePainter.ShowIndicator(MakePosFromObject(pt2.tp2))
+                            ParticlePainter.ShowIndicator(MakePos(pt2.tp1))
+                            ParticlePainter.ShowIndicator(MakePos(pt2.tp2))
                             return out.success(GetSendText(1, `传送门 ${res.WA_PortalName} 已更新`))
                         } else {
                             return out.error(GetSendText(3, `传送门 ${res.WA_PortalName} 不存在，请先创建该传送门`))
@@ -1731,8 +1953,8 @@ function onServerStarted() {
                         }
                         const linkTarget = Portal.linkPortal(res.WA_PortalName, PS.pos1, PS.pos2)
                         if (linkTarget) {
-                            ParticlePainter.ShowIndicator(MakePosFromObject(linkTarget.tp1))
-                            ParticlePainter.ShowIndicator(MakePosFromObject(linkTarget.tp2))
+                            ParticlePainter.ShowIndicator(MakePos(linkTarget.tp1))
+                            ParticlePainter.ShowIndicator(MakePos(linkTarget.tp2))
                             return out.success(GetSendText(1, `已与传送门 ${res.WA_PortalName} 建立连接`))
                         } else {
                             return out.error(GetSendText(3, `传送门 ${res.WA_PortalName} 不存在`))
@@ -1755,11 +1977,11 @@ function onServerStarted() {
                     case "tp":
                         const APortal = Portal.getPortal(res.WA_PortalName)
                         if (APortal) {
-                            pl.teleport(MakePosFromObject(APortal.tpTarget.tp1))
+                            pl.teleport(MakePos(APortal.tpTarget.tp1))
                             const visualizer = new ParticlePainter("minecraft:blue_flame_particle", 1000)
-                            visualizer.drawCube(MakePosFromObject(APortal.posMin), MakePosFromObject(APortal.posMax))
-                            ParticlePainter.ShowIndicator(MakePosFromObject(APortal.tpTarget.tp1))
-                            ParticlePainter.ShowIndicator(MakePosFromObject(APortal.tpTarget.tp2))
+                            visualizer.drawCube(MakePos(APortal.posMin), MakePos(APortal.posMax))
+                            ParticlePainter.ShowIndicator(MakePos(APortal.tpTarget.tp1))
+                            ParticlePainter.ShowIndicator(MakePos(APortal.tpTarget.tp2))
                             setTimeout(()=>{
                                 visualizer.clear()
                             }, 10000)
