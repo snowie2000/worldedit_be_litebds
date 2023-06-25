@@ -401,14 +401,14 @@ function onServerStarted() {
 
     cmd.setCallback((_cmd, ori, out, res) => {
       let coloridx = parseInt(res.ColorIndex)
-      if (coloridx < 0 || coloridx >= 16) {
+      if (coloridx < 0 || coloridx > 16) {
         return out.error(ColorMsg("只能选择1-16的颜色", 3))
       }
       const pldata = PlayerStore.get(ori.player.xuid)
       if (coloridx === 0) {
         pldata.setLineColor()
       } else {
-        pldata.setLineColor(coloridx)
+        pldata.setLineColor(coloridx-1)
       }
       pldata.selection().refresh()
       out.success("显示颜色已更新")
