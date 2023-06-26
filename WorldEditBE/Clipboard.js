@@ -8,44 +8,78 @@ import {
   ParsePos,
   SetOffset,
   GetOffset,
+  ParseIntPos,
 } from "./functions.js"
 
 class UndoInstance {
   UndoCounter
   undoList
-  constructor() {
+  player
+  constructor(pl) {
     this.UndoCounter = 0
     this.undoList = []
+    this.redoList = []
+    this.player = pl
   }
-  Save(pl, pos1, pos2) {
+  Save(pos1, pos2, preserveRedo = false) {
     let UndoPosMin = GetMinPos(pos1, pos2) //取消操作时的执行坐标
     let UndoPosMax = GetMaxPos(pos1, pos2)
-    let UndoName = `${pl.realName}_Undo_${++this.UndoCounter}}`
-    let res = SaveStructure(pl, UndoName, UndoPosMin, UndoPosMax)
+    let UndoName = `${this.player.realName}_Undo_${++this.UndoCounter}}`
+    let res = SaveStructure(this.player, UndoName, UndoPosMin, UndoPosMax)
     if (!res.success) {
       return res
     }
     // retrieve old undo list for current player and append new undo instance to it.
     if (this.undoList.length >= Config.MaxUndo) {
-      this.undoList.splice(0, 1)
+      RemoveStructure(this.player, this.undoList.splice(0, 1)[0].name)
     }
     this.undoList.push({
       posMin: UndoPosMin,
       posMax: UndoPosMax,
       name: UndoName,
     })
+    if (!preserveRedo) {
+      // 添加新的undo记录时将清空redo
+      this.redoList.forEach((item) => {
+        RemoveStructure(this.player, item.name)
+      })
+      this.redoList = []
+    }
+    return {
+      success: true,
+      output: "Saved",
+    }
+  }
+  _saveRecordToRedo(record) {
+    if (this.redoList.length >= Config.MaxUndo) {
+      RemoveStructure(this.player, this.redoList.splice(0, 1)[0].name)
+    }
+    let RedoName = `Redo_${record.name}`
+    let res = SaveStructure(this.player, RedoName, record.posMin, record.posMax)
+    if (!res.success) {
+      return res
+    }
+    this.redoList.push({
+      ...record,
+      name: RedoName,
+    })
+    return {
+      success: true,
+      output: "Saved as redo",
+    }
   }
   pop() {
     // if there is any undo instances available, pop the last one and return it
     if (this.undoList.length > 0) {
       const record = this.undoList.pop()
+      const inst = this
       return {
         ...record,
-        undo(pl) {
-          this.undo(pl, record, false)
+        undo() {
+          return inst.undo(record)
         },
-        discard(pl) {
-          RemoveStructure(pl, record.name)
+        discard() {
+          RemoveStructure(inst.player, record.name)
         },
       }
     }
@@ -54,19 +88,40 @@ class UndoInstance {
   /**
    * 加载
    */
-  undo(pl, record, discard = true) {
+  undo(record) {
     let undo = record || this.pop()
     if (!undo) {
       return { success: false, output: "没有可撤销的操作" }
     }
-    let ret = LoadStructure(pl, undo.name, undo.posMin, 0, 0)
-    if (discard) {
-      RemoveStructure(pl, undo.name)
+    // 将undo区块保存为redo信息
+    this._saveRecordToRedo(undo)
+    let ret = LoadStructure(this.player, undo.name, undo.posMin, 0, 0)
+    RemoveStructure(this.player, undo.name)
+    return {
+      ...ret,
+      record: undo,
     }
-    return ret
+  }
+  redo() {
+    let redo = this.redoList.pop()
+    if (!redo) {
+      return { success: false, output: "没有可恢复的操作" }
+    }
+    // 在redo时将信息保存为新的undo记录，并保留更多redo记录
+    this.Save(redo.posMin, redo.posMax, true)
+    let ret = LoadStructure(this.player, redo.name, redo.posMin, 0, 0)
+    // redo完成后丢弃structure
+    RemoveStructure(this.player, redo.name)
+    return {
+      ...ret,
+      record: redo,
+    }
   }
   count() {
     return this.undoList.length
+  }
+  redoCount() {
+    return this.redoList.length
   }
 }
 
@@ -75,14 +130,18 @@ class CopyInstance {
   origin
   pos1
   pos2
-  Save(pl, pos1, pos2) {
-    let CopyName = `${pl.realName}_Copy`
-    let playerPos = ParsePos(pl.pos)
+  player
+  constructor(pl) {
+    this.player = pl
+  }
+  Save(origin, pos1, pos2) {
+    let CopyName = `${this.player.realName}_Copy`
+    let playerPos = ParseIntPos(origin)
     let targetVertices = {
       p1: GetMinPos(pos1, pos2),
       p2: GetMaxPos(pos1, pos2),
     }
-    let res = SaveStructure(pl, CopyName, targetVertices.p1, targetVertices.p2)
+    let res = SaveStructure(this.player, CopyName, targetVertices.p1, targetVertices.p2)
     if (!res.success) {
       return res
     }
@@ -96,9 +155,9 @@ class CopyInstance {
   empty() {
     return !this.copyName
   }
-  clear(pl) {
+  clear() {
     if (this.copyName) {
-      RemoveStructure(pl, this.copyName)
+      RemoveStructure(this.player, this.copyName)
     }
     this.copyName = undefined
     this.pos1 = undefined
@@ -109,12 +168,12 @@ class CopyInstance {
    * @param mirror  镜像 0: 不镜像 1: X轴 2: Z轴 3: XZ轴
    * @param rotation 旋转 0: 不旋转 1: 旋转90° 2: 旋转180° 3: 旋转270°
    */
-  paste(pl, pos, mirror = 0, rotation = 0) {
+  paste(pos, mirror = 0, rotation = 0) {
     let posByOffset = SetOffset(pos, GetOffset(this.origin, this.pos1)) // 根据复制时的坐标反推粘贴时的坐标
-    return LoadStructure(pl, this.copyName, posByOffset, mirror, rotation)
+    return LoadStructure(this.player, this.copyName, posByOffset, mirror, rotation)
   }
   doStack(pos, direction, count, spacing, callback) {
-    const targetPos = this.getTargetPos(pos)
+    const targetPos = this.getTargetPos(ParseIntPos(pos))
     const min = GetMinPos(targetPos.p1, targetPos.p2)
     const max = GetMaxPos(targetPos.p1, targetPos.p2)
     const dimension = {
@@ -159,9 +218,9 @@ class CopyInstance {
     }
     return flag
   }
-  stack(pl, pos, direction, count, spacing) {
+  stack(pos, direction, count, spacing) {
     return this.doStack(pos, direction, count, spacing ?? 0, (minPos, maxPos) => {
-      const result = LoadStructure(pl, this.copyName, minPos, 0, 0)
+      const result = LoadStructure(this.player, this.copyName, minPos, 0, 0)
       return result && result.success
     })
   }
@@ -195,14 +254,14 @@ class CopyInstance {
 
 function undoHandler() {
   if (!this.get("undo")) {
-    this.set("undo", new UndoInstance())
+    this.set("undo", new UndoInstance(this.player))
   }
   return this.get("undo")
 }
 
 function clipboardHandler() {
   if (!this.get("clipboard")) {
-    this.set("clipboard", new CopyInstance())
+    this.set("clipboard", new CopyInstance(this.player))
   }
   return this.get("clipboard")
 }

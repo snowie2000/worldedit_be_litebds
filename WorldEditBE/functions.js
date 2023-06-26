@@ -7,7 +7,7 @@ export const console = {
 
 // 将IntPos/FloatPos转换成js对象
 export function ParsePos(pos) {
-  // Timya格式，使用数组表示
+  // 数组格式
   if (Array.isArray(pos)) {
     return {
       x: pos[0],
@@ -24,6 +24,26 @@ export function ParsePos(pos) {
     dimid: pos.dimid,
   }
 }
+
+export function ParseIntPos(pos) {
+  // 数组格式
+  if (Array.isArray(pos)) {
+    return {
+      x: Math.floor(pos[0]),
+      y: Math.floor(pos[1]),
+      z: Math.floor(pos[2]),
+      dimid: pos[3] || 0,
+    }
+  }
+  // LiteBDS标准格式
+  return {
+    x: Math.floor(pos.x),
+    y: Math.floor(pos.y),
+    z: Math.floor(pos.z),
+    dimid: pos.dimid,
+  }
+}
+
 export function MakePos(...args) {
   if (args.length > 3) {
     return new FloatPos(...args)
@@ -98,7 +118,6 @@ export function SaveStructure(pl, name, pos1, pos2, type = "memory") {
       return { success: false, output: "Function mc.getStructure execute failed!" }
     }
     nbt.setTag("structure_world_origin", new NbtList([new NbtInt(0), new NbtInt(0), new NbtInt(0)]))
-    // logger.info(nbt.toSNBT(2));
     NbtMap.set(name, nbt)
     return {
       success: true,
@@ -261,21 +280,68 @@ export function GetItemBlockStatesToJson(it) {
   if (states == null) {
     return json
   }
-  let keys = states.getKeys()
-  keys.forEach((v) => {
-    let t = states.getTypeOf(v)
-    if (t == 1) {
-      //Byte/Bool
-      json[v] = Boolean(states.getData(v))
-    } else if (t == 8) {
-      //String
-      json[v] = states.getData(v)
-    } else if (t == 3) {
-      //int
-      json[v] = states.getData(v)
+  // let keys = states.getKeys()
+  // keys.forEach((v) => {
+  //   let t = states.getTypeOf(v)
+  //   if (t == 1) {
+  //     //Byte/Bool
+  //     json[v] = Boolean(states.getData(v))
+  //   } else if (t == 8) {
+  //     //String
+  //     json[v] = states.getData(v)
+  //   } else if (t == 3) {
+  //     //int
+  //     json[v] = states.getData(v)
+  //   }
+  // })
+  return states.toObject()
+}
+
+// helper functions
+
+function ReplaceBlockStateNbt(nbt, states) {
+  let nowStates = nbt.getTag("states") || new NbtCompound({})
+  Object.keys(states).forEach((k) => {
+    let v = states[k]
+    switch (typeof v) {
+      case "boolean": {
+        nowStates.setByte(k, +v)
+        break
+      }
+      case "number": {
+        nowStates.setInt(k, v)
+        break
+      }
+      case "string": {
+        nowStates.setString(k, v)
+        break
+      }
     }
   })
-  return json
+  nbt.setTag("states", nowStates)
+}
+
+// 通过替换玩家脚下的方块来获得一个我们需要的NBT结构，从而可以在fillStructure中填充
+function GetBlockNbt(pl, type, states) {
+  let pos = pl.pos
+  let old = mc.getBlock(pos)
+  if (old == null) {
+    return null
+  }
+  let oldNbt = old.getNbt()
+  // 修改方块名称
+  mc.setBlock(pos, type)
+  let res = mc.getBlock(pos)
+  if (res == null) {
+    return null
+  }
+  let resNbt = res.getNbt()
+  // 修改nbt中的states
+  ReplaceBlockStateNbt(resNbt, states)
+  // 还原方块
+  mc.setBlock(pos, oldNbt)
+  // 返回修改完成后的nbt
+  return resNbt
 }
 
 export function FillStructure(pl, pos1, pos2, type, states) {
@@ -310,7 +376,7 @@ export function FillStructure(pl, pos1, pos2, type, states) {
           buildNbtList_Int(new Array(BlockSize).fill(0)),
           buildNbtList_Int(new Array(BlockSize).fill(-1)),
         ]),
-        entities: new NbtCompound({}),
+        entities: new NbtList([]),
         palette: new NbtCompound({
           default: new NbtCompound({
             block_palette: new NbtList([blockNbt]),

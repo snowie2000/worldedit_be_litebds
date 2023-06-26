@@ -83,17 +83,31 @@ class SysConfig extends ConfigFile {
   }
 }
 
-export class InfoStore extends Map {
+export class InfoStore {
   xuid
+  player
   prefData
+  store
   /**
    * player对应的数据管理类，部分数据在内存中，部分持久化到配置文件
-   * @param {string} id
    */
-  constructor(id) {
-    super()
-    this.xuid = id
-    this.savedData = PlayerSavedData.get(id)
+  constructor(pl) {
+    this.store = new Map()
+    this.xuid = pl.xuid
+    this.player = { ...pl }
+    this.savedData = PlayerSavedData.get(this.xuid)
+  }
+  get(prop) {
+    return this.store.get(prop)
+  }
+  set(prop, value) {
+    this.store.set(prop, value)
+  }
+  delete(prop) {
+    this.store.delete(prop)
+  }
+  has(prop) {
+    return this.store.has(prop)
   }
   /** 释放该玩家对应的所有需要管理的资源 */
   destroy() {
@@ -101,7 +115,7 @@ export class InfoStore extends Map {
     // call destructors
     Object.keys(ISHandlerMap).forEach((name) => {
       if (name.endsWith(":destructor")) {
-        ISHandlerMap[name].apply(self)
+        ISHandlerMap[name].bind(self)()
       }
     })
   }
@@ -115,11 +129,21 @@ export class PlayerStorage {
   constructor() {
     this.store = new Map()
   }
-  getId(pl) {
-    if (typeof pl !== "string") {
-      pl = pl.xuid
+  getPlayerInfo(pl) {
+    if (typeof pl === "string") {
+      pl = mc.getPlayer(pl)
     }
-    return pl
+    if (pl) {
+      return {
+        xuid: pl.xuid,
+        name: pl.name,
+        realName: pl.realName,
+        uuid: pl.uuid,
+        uniqueId: pl.uniqueId,
+      }
+    } else {
+      return {}
+    }
   }
   /**
    * @param {Player} pl
@@ -127,20 +151,19 @@ export class PlayerStorage {
    * @returns {InfoStore}
    */
   get(pl) {
-    const id = this.getId(pl)
-    let s = this.store.get(id)
+    const pi = this.getPlayerInfo(pl)
+    let s = this.store.get(pi.xuid)
     if (!s) {
-      s = new Proxy(new InfoStore(id), InfoStoreHandler)
-      this.store.set(id, s)
+      s = new Proxy(new InfoStore(pi), InfoStoreHandler)
+      this.store.set(pi.xuid, s)
     }
     return s
   }
-  delete(pl) {
-    const id = this.getId(pl)
-    if (this.store.has(id)) {
-      const s = this.store.get(id)
+  delete(xuid) {
+    if (this.store.has(xuid)) {
+      const s = this.store.get(xuid)
       s.destroy()
-      this.store.delete(id)
+      this.store.delete(xuid)
     }
   }
 }

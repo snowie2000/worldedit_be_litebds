@@ -1,5 +1,5 @@
 import { registerPlayerDataHandler, PlayerStore } from "./DataStore.js"
-import { GetMaxPos, GetMinPos, ParsePos, MakePos, console } from "./functions.js"
+import { GetMaxPos, GetMinPos, ParsePos, MakePos, console, ParseIntPos } from "./functions.js"
 
 export class PosSelector {
   pos1
@@ -57,11 +57,13 @@ export class PosSelector {
   }
   /** 刷新visualizer的显示 */
   refresh() {
-    PlayerStore.get(this.xuid).painter("selection", undefined, "minecraft:balloon_gas_particle", 1000, true)
+    const lineColor = PlayerStore.get(this.xuid).lineColor()
+    PlayerStore.get(this.xuid).painter("selection", lineColor, "minecraft:balloon_gas_particle", 1000, true)
     this.showGrid()
   }
   showGrid() {
-    let visualizer = PlayerStore.get(this.xuid).painter("selection", undefined, "minecraft:balloon_gas_particle")
+    const lineColor = PlayerStore.get(this.xuid).lineColor()
+    let visualizer = PlayerStore.get(this.xuid).painter("selection", lineColor, "minecraft:balloon_gas_particle")
     visualizer.clear()
     if (this.pos1 && this.pos2) {
       const small = GetMinPos(this.pos1, this.pos2)
@@ -80,12 +82,10 @@ function selectionHandler() {
 }
 
 function freeSelection() {
-  console.log(this, this.xuid, this instanceof Map)
   const selection = this.get("selection")
   if (selection) {
     selection.clear()
   }
 }
 
-logger.info("selection initialized")
 registerPlayerDataHandler("selection", selectionHandler, freeSelection)

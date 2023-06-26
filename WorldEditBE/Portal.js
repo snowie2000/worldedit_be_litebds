@@ -1,5 +1,5 @@
 import { ConfigFile } from "./DataStore.js"
-import { CanStandOn, console, ParsePos } from "./functions.js"
+import { CanStandOn, console, ParsePos, GetMinPos, GetMaxPos } from "./functions.js"
 
 export class PortalInfo extends ConfigFile {
   jsonTemplate

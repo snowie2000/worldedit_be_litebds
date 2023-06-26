@@ -1,9 +1,11 @@
 import { Config, PlayerStore } from "./plugins/WorldEditBE/DataStore.js"
 import {
-  ParsePos,
+  ParseIntPos,
   debounce,
   ColorMsg,
+  console,
   FillStructure,
+  SetOffset,
   MakePos,
   GetItemBlockStatesToJson,
   RefreshChunkForAffectedPlayers,
@@ -41,6 +43,7 @@ function SetPos1(pl, pos) {
   PlayerStore.get(pl.xuid).selection().setP1(pos)
   pl.tell(ColorMsg(`pos1 已选定为 ${pos.x}, ${pos.y}, ${pos.z}, ${pl.pos.dim}`, 1))
 }
+
 function SetPos2(pl, pos) {
   let sel = PlayerStore.get(pl.xuid).selection()
   if (sel.pos1) {
@@ -65,7 +68,7 @@ function onLeft(pl) {
 
 function onAttackBlock(pl, bl) {
   if (CanUseWoodenAxe(pl) && pl.getHand().type == Wand) {
-    SetPos1(pl, ParsePos(bl.pos))
+    SetPos1(pl, ParseIntPos(bl.pos))
     return false
   }
   return true
@@ -82,7 +85,7 @@ const debouncedSetPos2 = debounce(SetPos2, 500)
 
 function onUseItemOn(pl, _, bl) {
   if (CanUseWoodenAxe(pl) && pl.getHand().type == Wand) {
-    debouncedSetPos2(pl, ParsePos(bl.pos))
+    debouncedSetPos2(pl, ParseIntPos(bl.pos))
     return false
   }
   return true
@@ -113,7 +116,7 @@ function onServerStarted() {
       }
       if (CanUseWoodenAxe(pl)) {
         let pos = pl.pos
-        SetPos1(pl, ParsePos(pos))
+        SetPos1(pl, ParseIntPos(pos))
       } else {
         out.error(ColorMsg("你没有权限使用此命令!", 3))
       }
@@ -153,7 +156,7 @@ function onServerStarted() {
           return out.error(ColorMsg("请先创建选区", 3))
         }
         const copyIns = PlayerStore.get(pl.xuid).clipboard()
-        let res = copyIns.Save(pl, sel.pos1, sel.pos2)
+        let res = copyIns.Save(pl.pos, sel.pos1, sel.pos2)
         if (res.success) {
           out.success(ColorMsg("复制完成!使用/paste可粘贴建筑", 1))
         } else {
@@ -166,11 +169,11 @@ function onServerStarted() {
   })
 
   new BDSCommand("paste", "粘贴所复制的方块", PermType.Any).then((cmd) => {
-    //   cmd.setEnum("WA_MirrorOptEnum", ["none", "x", "z", "xz"])
-    //   cmd.setEnum("WA_RotationOptEnum", ["0", "90", "180", "270"])
-    //   cmd.optional("WA_MirrorOpt", ParamType.Enum, "WA_MirrorOptEnum", "WA_MirrorOpt", 1)
-    //   cmd.mandatory("WA_RotationOpt", ParamType.Int)
-    //   cmd.overload(["WA_RotationOpt", "WA_MirrorOpt"])
+    //   cmd.setEnum("MirrorOptEnum", ["none", "x", "z", "xz"])
+    //   cmd.setEnum("RotationOptEnum", ["0", "90", "180", "270"])
+    //   cmd.optional("MirrorOpt", ParamType.Enum, "MirrorOptEnum", "MirrorOpt", 1)
+    //   cmd.mandatory("RotationOpt", ParamType.Int)
+    //   cmd.overload(["RotationOpt", "MirrorOpt"])
     cmd.overload([])
     cmd.setCallback((_cmd, ori, out, res) => {
       let pl = ori.player
@@ -186,10 +189,10 @@ function onServerStarted() {
         const undoIns = PlayerStore.get(pl.xuid).undo()
 
         let pos = pl.pos
-        let PlacePos = ParsePos(pos)
+        let PlacePos = ParseIntPos(pos)
         let targetPos = copyIns.getTargetPos(PlacePos)
-        undoIns.Save(pl, targetPos.p1, targetPos.p2) // 在粘贴前记录粘贴位置上的信息
-        const ret = copyIns.paste(pl, PlacePos)
+        undoIns.Save(targetPos.p1, targetPos.p2) // 在粘贴前记录粘贴位置上的信息
+        const ret = copyIns.paste(PlacePos)
         if (ret.success) {
           out.success(ColorMsg("粘贴成功,可使用 /undo 撤销粘贴操作!", 1))
           RefreshChunkForAffectedPlayers(targetPos.p1, targetPos.p2)
@@ -235,17 +238,16 @@ function onServerStarted() {
         }
         let pos = pl.pos
         const direction = res["StackDirection"] || plDirection // 如果玩家输入了方向，则使用玩家输入的方向，否则使用玩家朝向
-        let PlacePos = ParsePos(pos)
+        let PlacePos = ParseIntPos(pos)
         let targetPos = copyIns.getStackPos(PlacePos, direction, res.StackCount, res.StatckSpacing) // 计算stack后会占用的空间坐标
-
         const visualizer = PlayerStore.get(pl).painter("target", "V", "minecraft:blue_flame_particle", 1000)
         visualizer.drawCube(MakePos(targetPos.p1), MakePos(targetPos.p2))
         setTimeout(() => {
           visualizer.clear()
         }, 10000)
 
-        undoIns.Save(pl, targetPos.p1, targetPos.p2) // 在粘贴前记录粘贴位置上的信息
-        let ret = copyIns.stack(pl, PlacePos, direction, res.StackCount, res.StatckSpacing)
+        undoIns.Save(targetPos.p1, SetOffset(targetPos.p2, { x: -1, y: -1, z: -1 })) // 在stack前记录位置上的信息, targetPos给出的显示范围，总是比block范围大1
+        let ret = copyIns.stack(PlacePos, direction, res.StackCount, res.StatckSpacing)
         if (ret) {
           out.success(ColorMsg("堆叠成功,使用 /undo 恢复操作之前!", 1))
           RefreshChunkForAffectedPlayers(targetPos.p1, targetPos.p2)
@@ -280,15 +282,15 @@ function onServerStarted() {
   })
 
   new BDSCommand("set", "设置选定区域的方块", PermType.Any).then((cmd) => {
-    cmd.setEnum("WA_HandOptEnum", ["hand"])
-    cmd.mandatory("WA_BlockNameHand", ParamType.Enum, "WA_HandOptEnum", "WA_BlockNameHand", 1)
-    cmd.optional("WA_BlockStateHand", ParamType.Enum, "WA_HandOptEnum", "WA_BlockStateHand", 1)
-    cmd.mandatory("WA_Block", ParamType.Block)
-    cmd.optional("WA_BlockState", ParamType.JsonValue)
-    cmd.overload(["WA_BlockNameHand", "WA_BlockStateHand"])
-    cmd.overload(["WA_BlockNameHand", "WA_BlockState"])
-    cmd.overload(["WA_Block", "WA_BlockStateHand"])
-    cmd.overload(["WA_Block", "WA_BlockState"])
+    cmd.setEnum("HandOptEnum", ["hand"])
+    cmd.optional("BlockStateHand", ParamType.Enum, "HandOptEnum", "BlockStateHand", 1)
+    cmd.optional("BlockState", ParamType.JsonValue)
+    cmd.mandatory("BlockNameHand", ParamType.Enum, "HandOptEnum", "BlockNameHand", 1)
+    cmd.mandatory("Block", ParamType.Block)
+    cmd.overload(["Block", "BlockStateHand"])
+    cmd.overload(["Block", "BlockState"])
+    cmd.overload(["BlockNameHand", "BlockStateHand"])
+    cmd.overload(["BlockNameHand", "BlockState"])
     cmd.setCallback((_cmd, ori, out, res) => {
       let pl = ori.player
       if (pl == null) {
@@ -299,16 +301,16 @@ function onServerStarted() {
         if (!sel.isValid()) {
           return out.error(ColorMsg("请先选择一块区域", 3))
         }
-        let NameUseHand = !!res["WA_BlockNameHand"]
-        let StateUseHand = !!res["WA_BlockStateHand"]
+        let NameUseHand = !!res["BlockNameHand"]
+        let StateUseHand = !!res["BlockStateHand"]
         let hand = pl.getHand()
         if ((NameUseHand || StateUseHand) && !hand.isBlock) {
           return out.error(ColorMsg("所选物品不是一个方块!", 3))
         }
-        let type = NameUseHand ? hand.type : res["WA_Block"].type
+        let type = NameUseHand ? hand.type : res["Block"].type
         let state = StateUseHand
           ? GetItemBlockStatesToJson(hand)
-          : JSON.parse(!res["WA_BlockState"] ? "{}" : res["WA_BlockState"])
+          : JSON.parse(!res["BlockState"] ? "{}" : res["BlockState"])
         if (NameUseHand && !StateUseHand) {
           //防止方块出现奇怪的问题???
           let d = GetItemBlockStatesToJson(hand)
@@ -320,7 +322,7 @@ function onServerStarted() {
           })
         }
         const undoIns = PlayerStore.get(pl.xuid).undo()
-        const ret = undoIns.Save(pl, sel.pos1, sel.pos2)
+        const ret = undoIns.Save(sel.pos1, sel.pos2)
         let sendRes = (a, o) => {
           switch (a) {
             case 0: {
@@ -381,11 +383,35 @@ function onServerStarted() {
         if (!undoIns.count()) {
           return out.error(ColorMsg("你还没有undo记录!", 3))
         }
-        const undoInfo = undoIns.pop()
-        const ret = undoInfo.undo()
+        const ret = undoIns.undo()
         if (ret.success) {
           out.success(ColorMsg("恢复上一次操作成功", 1))
-          RefreshChunkForAffectedPlayers(undoInfo.posMin, undoInfo.posMax)
+          RefreshChunkForAffectedPlayers(ret.record.posMin, ret.record.posMax)
+        } else {
+          out.error(ColorMsg(`恢复上一次操作失败,原因: ${ret.output}`, 3))
+        }
+      } else {
+        out.error(ColorMsg("你没有权限使用此命令!", 3))
+      }
+    })
+  })
+
+  new BDSCommand("redo", "恢复上一次撤销的操作", PermType.Any).then((cmd) => {
+    cmd.overload([])
+    cmd.setCallback((_cmd, ori, out, res) => {
+      let pl = ori.player
+      if (pl == null) {
+        return out.error(ColorMsg("无法通过非玩家执行此命令!", 3))
+      }
+      if (CanUseWoodenAxe(pl)) {
+        const redoIns = PlayerStore.get(pl.xuid).undo()
+        if (!redoIns.redoCount()) {
+          return out.error(ColorMsg("没有操作可以恢复", 3))
+        }
+        const ret = redoIns.redo()
+        if (ret.success) {
+          out.success(ColorMsg("恢复上一次操作成功", 1))
+          RefreshChunkForAffectedPlayers(ret.record.posMin, ret.record.posMax)
         } else {
           out.error(ColorMsg(`恢复上一次操作失败,原因: ${ret.output}`, 3))
         }
@@ -408,7 +434,7 @@ function onServerStarted() {
       if (coloridx === 0) {
         pldata.setLineColor()
       } else {
-        pldata.setLineColor(coloridx-1)
+        pldata.setLineColor(coloridx - 1)
       }
       pldata.selection().refresh()
       out.success("显示颜色已更新")
@@ -416,10 +442,10 @@ function onServerStarted() {
   })
 
   new BDSCommand("portal", "Setup a custom portal", PermType.Any).then((cmd) => {
-    cmd.optional("WA_PortalName", ParamType.String)
-    cmd.setEnum("WA_ActionEnum", ["new", "link", "delete", "list", "unlink", "update", "tp"])
-    cmd.mandatory("WA_Action", ParamType.Enum, "WA_ActionEnum", "WA_Action", 1)
-    cmd.overload(["WA_Action", "WA_PortalName"])
+    cmd.optional("PortalName", ParamType.String)
+    cmd.setEnum("ActionEnum", ["new", "link", "delete", "list", "unlink", "update", "tp"])
+    cmd.mandatory("Action", ParamType.Enum, "ActionEnum", "Action", 1)
+    cmd.overload(["ActionEnum", "PortalName"])
 
     cmd.setCallback((_cmd, ori, out, res) => {
       let pl = ori.player
@@ -431,20 +457,20 @@ function onServerStarted() {
       }
       const sel = PlayerStore.get(pl.xuid).selection()
 
-      if (res.WA_PortalName) {
-        switch (res.WA_Action) {
+      if (res.PortalName) {
+        switch (res.Action) {
           case "new":
             if (!sel.isValid()) {
               return out.error(ColorMsg("请先选择传送门区域", 3))
             }
             // user is defining a new portal
-            const pt = Portal.addPortal(res.WA_PortalName, sel.pos1, sel.pos2)
+            const pt = Portal.addPortal(res.PortalName, sel.pos1, sel.pos2)
             if (pt) {
               ParticlePainter.ShowIndicator(MakePos(pt.tp1))
               ParticlePainter.ShowIndicator(MakePos(pt.tp2))
-              return out.success(ColorMsg(`传送门 ${res.WA_PortalName} 已创建`, 1))
+              return out.success(ColorMsg(`传送门 ${res.PortalName} 已创建`, 1))
             } else {
-              return out.error(ColorMsg(`传送门 ${res.WA_PortalName} 已存在，请选择其他名称`, 3))
+              return out.error(ColorMsg(`传送门 ${res.PortalName} 已存在，请选择其他名称`, 3))
             }
             break
           case "update":
@@ -452,44 +478,44 @@ function onServerStarted() {
               return out.error(ColorMsg("请先选择传送门区域", 3))
             }
             // user is defining a new portal
-            const pt2 = Portal.updatePortal(res.WA_PortalName, sel.pos1, sel.pos2)
+            const pt2 = Portal.updatePortal(res.PortalName, sel.pos1, sel.pos2)
             if (pt2) {
               ParticlePainter.ShowIndicator(MakePos(pt2.tp1))
               ParticlePainter.ShowIndicator(MakePos(pt2.tp2))
-              return out.success(ColorMsg(`传送门 ${res.WA_PortalName} 已更新`, 1))
+              return out.success(ColorMsg(`传送门 ${res.PortalName} 已更新`, 1))
             } else {
-              return out.error(ColorMsg(`传送门 ${res.WA_PortalName} 不存在，请先创建该传送门`, 3))
+              return out.error(ColorMsg(`传送门 ${res.PortalName} 不存在，请先创建该传送门`, 3))
             }
             break
           case "link":
             if (!sel.pos1 || !sel.pos2) {
               return out.error(ColorMsg("请先选择传送门区域", 3))
             }
-            const linkTarget = Portal.linkPortal(res.WA_PortalName, sel.pos1, sel.pos2)
+            const linkTarget = Portal.linkPortal(res.PortalName, sel.pos1, sel.pos2)
             if (linkTarget) {
               ParticlePainter.ShowIndicator(MakePos(linkTarget.tp1))
               ParticlePainter.ShowIndicator(MakePos(linkTarget.tp2))
-              return out.success(ColorMsg(`已与传送门 ${res.WA_PortalName} 建立连接`, 1))
+              return out.success(ColorMsg(`已与传送门 ${res.PortalName} 建立连接`, 1))
             } else {
-              return out.error(ColorMsg(`传送门 ${res.WA_PortalName} 不存在`, 3))
+              return out.error(ColorMsg(`传送门 ${res.PortalName} 不存在`, 3))
             }
             break
           case "unlink":
-            if (Portal.unlinkPortal(res.WA_PortalName)) {
-              return out.success(ColorMsg(`传送门 ${res.WA_PortalName} 已断开连接`, 1))
+            if (Portal.unlinkPortal(res.PortalName)) {
+              return out.success(ColorMsg(`传送门 ${res.PortalName} 已断开连接`, 1))
             } else {
-              return out.error(ColorMsg(`传送门 ${res.WA_PortalName} 不存在或没有建立连接`, 3))
+              return out.error(ColorMsg(`传送门 ${res.PortalName} 不存在或没有建立连接`, 3))
             }
             break
           case "delete":
-            if (Portal.deletePortal(res.WA_PortalName)) {
-              return out.success(ColorMsg(`传送门 ${res.WA_PortalName} 已删除`, 1))
+            if (Portal.deletePortal(res.PortalName)) {
+              return out.success(ColorMsg(`传送门 ${res.PortalName} 已删除`, 1))
             } else {
-              return out.error(ColorMsg(`传送门 ${res.WA_PortalName} 不存在`, 3))
+              return out.error(ColorMsg(`传送门 ${res.PortalName} 不存在`, 3))
             }
             break
           case "tp":
-            const APortal = Portal.getPortal(res.WA_PortalName)
+            const APortal = Portal.getPortal(res.PortalName)
             if (APortal) {
               pl.teleport(MakePos(APortal.tpTarget.tp1))
               const visualizer = new ParticlePainter("minecraft:blue_flame_particle", 1000)
@@ -502,7 +528,7 @@ function onServerStarted() {
             }
         }
       } else {
-        switch (res.WA_Action) {
+        switch (res.Action) {
           case "list":
             const portals = Portal.listPortal()
             if (portals.length) {
