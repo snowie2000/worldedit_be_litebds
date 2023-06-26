@@ -134,7 +134,7 @@ function onServerStarted() {
       if (CanUseWoodenAxe(pl)) {
         let pos = pl.pos
         pos.y -= 1
-        SetPos2(pl, FloatPosToPOS(pos), (s) => {
+        SetPos2(pl, ParseIntPos(pos), (s) => {
           out.success(ColorMsg(s))
         })
       } else {
