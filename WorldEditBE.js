@@ -444,8 +444,13 @@ function onServerStarted() {
   new BDSCommand("portal", "Setup a custom portal", PermType.Any).then((cmd) => {
     cmd.optional("PortalName", ParamType.String)
     cmd.setEnum("ActionEnum", ["new", "link", "delete", "list", "unlink", "update", "tp"])
+    cmd.setEnum("RemoteActionEnum", ["remote"])
+    cmd.mandatory("ServerHost", ParamType.String)
+    cmd.optional("ServerPort", ParamType.Int)
     cmd.mandatory("Action", ParamType.Enum, "ActionEnum", "Action", 1)
-    cmd.overload(["ActionEnum", "PortalName"])
+    cmd.mandatory("RemoteAction", ParamType.Enum, "RemoteActionEnum", "RemoteAction", 1)
+    cmd.overload(["Action", "PortalName"])
+    cmd.overload(["RemoteAction", "PortalName", "ServerHost", "ServerPort"])
 
     cmd.setCallback((_cmd, ori, out, res) => {
       let pl = ori.player
@@ -525,6 +530,18 @@ function onServerStarted() {
               setTimeout(() => {
                 visualizer.clear()
               }, 10000)
+            }
+        }
+        switch (res.RemoteAction) {
+          case "remote":
+            res.ServerPort |= 19132
+            if (res.ServerPort < 0 || res.ServerPort >= 65565) {
+              return out.error(ColorMsg("非法端口，请输入1-65535内的端口号", 3))
+            }
+            if (Portal.linkServer(res.PortalName, res.ServerHost, res.ServerPort)) {
+              return out.success(ColorMsg(`传送门 ${res.PortalName} 已与异度空间建立了连接`, 1))
+            } else {
+              return out.error(ColorMsg(`传送门 ${res.PortalName} 不存在`, 3))
             }
         }
       } else {

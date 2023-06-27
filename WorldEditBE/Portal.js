@@ -1,5 +1,6 @@
 import { ConfigFile } from "./DataStore.js"
 import { CanStandOn, console, ParsePos, GetMinPos, GetMaxPos } from "./functions.js"
+import { Confirm } from "./Dialog.js"
 
 export class PortalInfo extends ConfigFile {
   jsonTemplate
@@ -239,6 +240,24 @@ export class PortalInfo extends ConfigFile {
   getPortal(name) {
     return this.content.portals[name]
   }
+  linkServer(name, serverHost, serverPort) {
+    if (this.content.portals[name]) {
+      const newTarget = {
+        name,
+        isRemote: true,
+        tpTarget: {
+          isRemote: true,
+          serverHost,
+          serverPort,
+        },
+      }
+      this.content.targets[name] = newTarget
+      this.saveFile()
+      return true
+    } else {
+      return false
+    }
+  }
   linkPortal(name, pos1, pos2) {
     if (this.content.portals[name]) {
       const newTarget = {
@@ -255,7 +274,6 @@ export class PortalInfo extends ConfigFile {
       newTarget.tpTarget = this.getPortalTpSpot(newTarget.posMin, newTarget.posMax)
       this.content.targets[name] = newTarget
       this.saveFile()
-      logger.error(JSON.stringify(newTarget.tpTarget))
       return newTarget.tpTarget // 成功则返回传送目标点
     }
     return false
@@ -282,6 +300,7 @@ export class PortalInfo extends ConfigFile {
       }
     })
     Object.values(this.content.targets).some((portalTarget) => {
+      if (portalTarget.isRemote) return false // 是远程传送，跳过
       if (portalTarget.posMin.dimid !== src.dimid) return false // 不在同维度直接跳过
       if (
         portalTarget.posMin.x < src.x &&
@@ -297,7 +316,8 @@ export class PortalInfo extends ConfigFile {
       }
     })
     if (res) {
-      console.log("facing ", pl.direction.toFacing())
+      if (res.isRemote) return res // 跨服传送没有传送点
+
       // 根据pl的方向决定传送至tp1还是tp2
       switch (pl.direction.toFacing()) {
         case 2:
@@ -317,10 +337,30 @@ export class PortalInfo extends ConfigFile {
     players.forEach((pl) => {
       if (this.inActionPlayers.has(pl.xuid)) return
       const target = this.getTeleportTarget(pl.pos, pl)
+
       if (target) {
         this.inActionPlayers.add(pl.xuid)
-        setTimeout(() => this.inActionPlayers.delete(pl.xuid), 1000)
-        pl.teleport(target.x, target.y, target.z, target.dimid)
+        if (target.isRemote) {
+          Confirm(pl, {
+            title: "传送确认",
+            content: `您将被传送至 ${target.serverHost} 服务器，确定传送？`,
+            onOk: () => {
+              const xuid = pl.xuid
+              setTimeout(() => this.inActionPlayers.delete(xuid), 5000)
+              pl.transServer(target.serverHost, target.serverPort)
+            },
+            onCancel: () => {
+              const xuid = pl.xuid
+              setTimeout(() => this.inActionPlayers.delete(xuid), 5000)
+            },
+            okText: "传送",
+            cancelText: "取消",
+          })
+        } else {
+          const xuid = pl.xuid
+          setTimeout(() => this.inActionPlayers.delete(xuid), 5000)
+          pl.teleport(target.x, target.y, target.z, target.dimid)
+        }
       }
     })
     if (!players.length) {
