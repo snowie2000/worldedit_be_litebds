@@ -296,6 +296,13 @@ export class PortalInfo extends ConfigFile {
       ) {
         console.log(pl.name, " is in portal ", portal.name)
         res = this.content.targets[portal.name].tpTarget
+        // 跨服传送，返回自身的tpTarget和服务端地址信息
+        if (res.isRemote) {
+          res = {
+            ...res,
+            ...portal.tpTarget,
+          }
+        }
         return true
       }
     })
@@ -316,8 +323,6 @@ export class PortalInfo extends ConfigFile {
       }
     })
     if (res) {
-      if (res.isRemote) return res // 跨服传送没有传送点
-
       // 根据pl的方向决定传送至tp1还是tp2
       switch (pl.direction.toFacing()) {
         case 2:
@@ -340,6 +345,7 @@ export class PortalInfo extends ConfigFile {
 
       if (target) {
         this.inActionPlayers.add(pl.xuid)
+        pl.teleport(target.x, target.y, target.z, target.dimid)
         if (target.isRemote) {
           Confirm(pl, {
             title: "传送确认",
@@ -359,7 +365,6 @@ export class PortalInfo extends ConfigFile {
         } else {
           const xuid = pl.xuid
           setTimeout(() => this.inActionPlayers.delete(xuid), 5000)
-          pl.teleport(target.x, target.y, target.z, target.dimid)
         }
       }
     })
