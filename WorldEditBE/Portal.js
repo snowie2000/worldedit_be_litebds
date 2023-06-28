@@ -299,8 +299,14 @@ export class PortalInfo extends ConfigFile {
         // 跨服传送，返回自身的tpTarget和服务端地址信息
         if (res.isRemote) {
           res = {
-            ...res,
-            ...portal.tpTarget,
+            tp1: {
+              ...res,
+              ...portal.tpTarget.tp1,
+            },
+            tp2: {
+              ...res,
+              ...portal.tpTarget.tp2,
+            },
           }
         }
         return true
