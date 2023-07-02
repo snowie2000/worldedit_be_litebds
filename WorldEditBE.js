@@ -81,11 +81,16 @@ function onDestroyBlock(pl, bl) {
   return true
 }
 
-const debouncedSetPos2 = debounce(SetPos2, 500)
+const suspendedActions = new Set()
 
 function onUseItemOn(pl, _, bl) {
-  if (CanUseWoodenAxe(pl) && pl.getHand().type == Wand) {
-    debouncedSetPos2(pl, ParseIntPos(bl.pos))
+  const actionKey = pl.xuid + '_useItem';
+  if (CanUseWoodenAxe(pl) && pl.getHand().type == Wand && !suspendedActions.has(actionKey)) {
+    SetPos2(pl, ParseIntPos(bl.pos))
+	if (!suspendedActions.has(actionKey)) {
+		suspendedActions.add(actionKey);
+		setTimeout(()=>suspendedActions.delete(actionKey), 500);
+	}	
     return false
   }
   return true

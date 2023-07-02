@@ -129,6 +129,7 @@ export class ParticlePainterLL {
     this.start()
   }
   start() {
+    this.paint()
     if (this.worker) {
       return
     }
@@ -244,6 +245,7 @@ export class ParticlePainter {
     this.start()
   }
   start() {
+    this.paint()
     if (this.worker) {
       return
     }
