@@ -1,3 +1,6 @@
+// LiteLoader-AIDS automatic generated
+/// <reference path="./dts/HelperLib-master/src/index.d.ts"/> 
+
 import { Config, PlayerStore } from "./plugins/WorldEditBE/DataStore.js"
 import {
   ParseIntPos,
@@ -17,6 +20,7 @@ import { BDSCommand } from "./plugins/WorldEditBE/Command.js"
 import "./plugins/WorldEditBE/Theme.js"
 import "./plugins/WorldEditBE/Clipboard.js"
 import "./plugins/WorldEditBE/Selection.js"
+
 
 const Wand = Config.Wand || "minecraft:wooden_axe"
 
