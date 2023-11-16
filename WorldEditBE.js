@@ -240,15 +240,20 @@ function onServerStarted() {
       }
 
       if (CanUseWoodenAxe(pl)) {
-        const copyIns = PlayerStore.get(pl.xuid).clipboard()
+        const stackIns = PlayerStore.get(pl.xuid).stack()
         const undoIns = PlayerStore.get(pl.xuid).undo()
-        if (copyIns.empty()) {
-          return out.error(ColorMsg("请先复制结构!", 3))
+        let sel = PlayerStore.get(pl.xuid).selection()
+        if (!sel.isValid()) {
+          return out.error(ColorMsg("请先创建选区", 3))
         }
         let pos = pl.pos
         const direction = res["StackDirection"] || plDirection // 如果玩家输入了方向，则使用玩家输入的方向，否则使用玩家朝向
         let PlacePos = ParseIntPos(pos)
-        let targetPos = copyIns.getStackPos(PlacePos, direction, res.StackCount, res.StatckSpacing) // 计算stack后会占用的空间坐标
+        let retSave = stackIns.Save(pl.pos, sel.pos1, sel.pos2) // 保存选中部分结构
+        if (!retSave.success) {
+          return out.error(ColorMsg(`无法保存选中区域! ${res.output}`, 1))
+        }
+        let targetPos = stackIns.getStackPos(PlacePos, direction, res.StackCount, res.StatckSpacing) // 计算stack后会占用的空间坐标
         const visualizer = PlayerStore.get(pl).painter("target", "V", "minecraft:blue_flame_particle", 1000)
         visualizer.drawCube(MakePos(targetPos.p1), MakePos(targetPos.p2))
         setTimeout(() => {
@@ -256,13 +261,15 @@ function onServerStarted() {
         }, 10000)
 
         undoIns.Save(targetPos.p1, SetOffset(targetPos.p2, { x: -1, y: -1, z: -1 })) // 在stack前记录位置上的信息, targetPos给出的显示范围，总是比block范围大1
-        let ret = copyIns.stack(PlacePos, direction, res.StackCount, res.StatckSpacing)
+        let ret = stackIns.stack(PlacePos, direction, res.StackCount, res.StatckSpacing)
         if (ret) {
           out.success(ColorMsg("堆叠成功,使用 /undo 恢复操作之前!", 1))
           RefreshChunkForAffectedPlayers(targetPos.p1, targetPos.p2)
         } else {
           undoIns.discardLast() // 粘贴失败时删除之前记录的粘贴位置上的信息
         }
+        // 堆叠结束后，无论是否成功均需要清除保存的结构
+        stackIns.clear()
       } else {
         out.error(ColorMsg("你没有权限使用此命令!", 3))
       }

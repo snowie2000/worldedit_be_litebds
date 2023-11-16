@@ -134,8 +134,8 @@ class CopyInstance {
   constructor(pl) {
     this.player = pl
   }
-  Save(origin, pos1, pos2) {
-    let CopyName = `${this.player.realName}_Copy`
+  Save(origin, pos1, pos2, structName = undefined) {
+    let CopyName = structName || `${this.player.realName}_Copy`
     let playerPos = ParseIntPos(origin)
     let targetVertices = {
       p1: GetMinPos(pos1, pos2),
@@ -171,6 +171,60 @@ class CopyInstance {
   paste(pos, mirror = 0, rotation = 0) {
     let posByOffset = SetOffset(pos, GetOffset(this.origin, this.pos1)) // 根据复制时的坐标反推粘贴时的坐标
     return LoadStructure(this.player, this.copyName, posByOffset, mirror, rotation)
+  }
+  getTargetPos(pos) {
+    return {
+      p1: SetOffset(pos, GetOffset(this.origin, this.pos1)),
+      p2: SetOffset(pos, GetOffset(this.origin, this.pos2)),
+    }
+  }
+}
+
+
+class StackInstance {
+  copyName
+  origin
+  pos1
+  pos2
+  player
+  constructor(pl) {
+    this.player = pl
+  }
+  Save(origin, pos1, pos2, structName = undefined) {
+    let CopyName = structName || `${this.player.realName}_Stack`
+    let playerPos = ParseIntPos(origin)
+    let targetVertices = {
+      p1: GetMinPos(pos1, pos2),
+      p2: GetMaxPos(pos1, pos2),
+    }
+    let res = SaveStructure(this.player, CopyName, targetVertices.p1, targetVertices.p2)
+    if (!res.success) {
+      return res
+    }
+    // 复制成功，记录复制时的坐标和玩家的位置以及structure的名称
+    this.pos1 = targetVertices.p1
+    this.pos2 = targetVertices.p2
+    this.origin = playerPos
+    this.copyName = CopyName
+    return res
+  }
+  getTargetPos(pos) {
+    return {
+      p1: SetOffset(pos, GetOffset(this.origin, this.pos1)),
+      p2: SetOffset(pos, GetOffset(this.origin, this.pos2)),
+    }
+  }
+  empty() {
+    return !this.copyName
+  }
+  clear() {
+    if (this.copyName) {
+      RemoveStructure(this.player, this.copyName)
+    }
+    this.copyName = undefined
+    this.pos1 = undefined
+    this.pos2 = undefined
+    this.origin = undefined
   }
   doStack(pos, direction, count, spacing, callback) {
     const targetPos = this.getTargetPos(ParseIntPos(pos))
@@ -224,12 +278,6 @@ class CopyInstance {
       return result && result.success
     })
   }
-  getTargetPos(pos) {
-    return {
-      p1: SetOffset(pos, GetOffset(this.origin, this.pos1)),
-      p2: SetOffset(pos, GetOffset(this.origin, this.pos2)),
-    }
-  }
   getStackPos(target, direction, count, spacing) {
     let start, stop
     this.doStack(target, direction, count, spacing ?? 0, (minPos, maxPos) => {
@@ -266,5 +314,13 @@ function clipboardHandler() {
   return this.get("clipboard")
 }
 
+function stackHandler() {
+  if (!this.get("stack")) {
+    this.set("stack", new StackInstance(this.player))
+  }
+  return this.get("stack")
+}
+
 registerPlayerDataHandler("undo", undoHandler)
 registerPlayerDataHandler("clipboard", clipboardHandler)
+registerPlayerDataHandler("stack", stackHandler)
